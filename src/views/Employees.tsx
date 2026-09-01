@@ -7,6 +7,7 @@ import { cx, docNo, fmtDate, fmtDateTime, fmtEur, nowIso, nowTime, todayIso, uui
 import { can } from '../lib/perms'
 import { Btn, Chip, Field, Modal, inputCls } from '../components/ui'
 import { putEmployee } from '../lib/persist'
+import { downloadText, downloadXlsx, XLSX_STYLE, type XlsxCell, type XlsxWorkbook } from '../lib/xlsx'
 
 export function EmployeesView({
   onOpenDoc, onOpenPotrdilo,
@@ -28,6 +29,52 @@ export function EmployeesView({
     .filter((e) => !search || e.displayName.toLowerCase().includes(search.toLowerCase()))
     .sort((a, b) => a.lastName.localeCompare(b.lastName))
   const selected = employees.find((e) => e.id === sel) ?? null
+
+  function downloadEmployeeCsvTemplate() {
+    const head = ['Ime', 'Priimek', 'Interna številka', 'Datum rojstva', 'Datum začetka zaposlitve', 'Št. dovoljenja / OI / potnega lista', 'Telefon', 'Vozilo', 'Opombe', 'Aktiven']
+    downloadText('\uFEFF' + head.join(';') + '\r\n', 'zaposleni-import-vzorec.csv', 'text/csv;charset=utf-8')
+  }
+
+  function downloadEmployeeExcelTemplate() {
+    const headers = ['Ime', 'Priimek', 'Interna številka', 'Datum rojstva', 'Datum začetka zaposlitve', 'Št. dovoljenja / OI / potnega lista', 'Telefon', 'Vozilo', 'Opombe', 'Aktiven']
+    const rows: XlsxCell[][] = [headers.map((value) => ({ value, style: XLSX_STYLE.HEADER }))]
+    for (let i = 0; i < 100; i++) {
+      rows.push([
+        { style: XLSX_STYLE.TEMPLATE_TEXT }, { style: XLSX_STYLE.TEMPLATE_TEXT }, { style: XLSX_STYLE.TEMPLATE_TEXT },
+        { style: XLSX_STYLE.TEMPLATE_DATE }, { style: XLSX_STYLE.TEMPLATE_DATE }, { style: XLSX_STYLE.TEMPLATE_TEXT },
+        { style: XLSX_STYLE.TEMPLATE_TEXT }, { style: XLSX_STYLE.TEMPLATE_TEXT }, { style: XLSX_STYLE.TEMPLATE_TEXT },
+        { style: XLSX_STYLE.TEMPLATE_ACTIVE },
+      ])
+    }
+    const instructions: XlsxCell[][] = [
+      [{ value: 'Predloga za uvoz zaposlenih', style: XLSX_STYLE.TITLE }],
+      [{ value: 'Kako uporabiti datoteko', style: XLSX_STYLE.SECTION }],
+      [{ value: '1. Na listu »Zaposleni« vnesite zaposlene. Ime in priimek sta obvezna; ostala polja so neobvezna.', style: XLSX_STYLE.BODY }],
+      [{ value: '2. Datum vnesite kot pravi Excel datum. Predloga ga prikaže v obliki dd.mm.yyyy.', style: XLSX_STYLE.BODY_ALT }],
+      [{ value: '3. V stolpcu »Aktiven« uporabite Da ali Ne. Če pustite prazno, se zaposleni uvozi kot aktiven.', style: XLSX_STYLE.BODY }],
+      [{ value: '4. Za uvoz v aplikacijo shranite list »Zaposleni« kot CSV UTF-8 (ločilo je lahko podpičje, vejica ali tabulator).', style: XLSX_STYLE.BODY_ALT }],
+      [{ value: '5. Nato v aplikaciji kliknite »Uvozi CSV«. Obstoječe osebe se ujemajo po interni številki oziroma imenu in priimku.', style: XLSX_STYLE.BODY }],
+      [],
+      [{ value: 'Obvezno', style: XLSX_STYLE.SECTION }],
+      [{ value: 'Ime, Priimek', style: XLSX_STYLE.BODY }],
+      [{ value: 'Neobvezno', style: XLSX_STYLE.SECTION }],
+      [{ value: 'Interna številka, datum rojstva, datum začetka zaposlitve, dokument, telefon, vozilo, opombe, aktivnost', style: XLSX_STYLE.BODY }],
+    ]
+    const book: XlsxWorkbook = {
+      title: 'Predloga za uvoz zaposlenih', subject: 'Uvoz zaposlenih v blagajno', creator: 'Blagajna BLU', company: 'Bonta d.o.o.',
+      sheets: [
+        {
+          name: 'Zaposleni', rows, widths: [18, 22, 18, 17, 24, 34, 20, 16, 34, 12], freezeRows: 1,
+          autoFilter: 'A1:J101', rowHeights: { 1: 34 }, showGridLines: false, landscape: true,
+          dataValidations: [{ sqref: 'J2:J101', formula1: '"Da,Ne"', allowBlank: true, promptTitle: 'Aktiven', prompt: 'Izberite Da ali Ne.', errorTitle: 'Neveljavna vrednost', error: 'Vnesite Da ali Ne.' }],
+        },
+        {
+          name: 'Navodila', rows: instructions, widths: [110], rowHeights: { 1: 28, 2: 22, 9: 22, 11: 22 }, showGridLines: false, landscape: false,
+        },
+      ],
+    }
+    downloadXlsx(book, 'zaposleni-import-predloga.xlsx')
+  }
 
   async function importEmployees(file: File | null) {
     if (!file) return
@@ -61,7 +108,7 @@ export function EmployeesView({
         await putEmployee(db, rec)
         if (old) updated++; else { added++; existing.push(rec) }
       }
-      await app.audit('Uvoz zaposlenih', 'Zaposleni', 'csv', `${added} novih · ${updated} posodobljenih`)
+      await app.audit('Uvoz zaposlenih', 'Zaposleni', file.name, `${added} novih · ${updated} posodobljenih`)
       alert(`Uvoz končan: ${added} novih, ${updated} posodobljenih zaposlenih.`)
     } catch (e: any) {
       alert(`Uvoz ni uspel: ${String(e?.message ?? e)}`)
@@ -74,11 +121,13 @@ export function EmployeesView({
         <div className="flex flex-wrap gap-2 items-center">
           <input className={cx(inputCls, 'min-w-[160px] flex-1')} placeholder="Išči zaposlenega …" value={search} onChange={(e) => setSearch(e.target.value)} />
           {manage && (
-            <label className="inline-flex shrink-0 cursor-pointer items-center rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50" title="Uvozi seznam zaposlenih iz CSV izvoza kadrovske baze">
+            <label className="inline-flex shrink-0 cursor-pointer items-center rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50" title="Uvozi seznam zaposlenih iz CSV datoteke">
               ⇧ Uvozi CSV
-              <input type="file" accept=".csv,text/csv,text/plain" className="hidden" onChange={(e) => { void importEmployees(e.target.files?.[0] ?? null); e.currentTarget.value = '' }} />
+              <input type="file" accept=".csv,.tsv,text/csv,text/plain,text/tab-separated-values" className="hidden" onChange={(e) => { void importEmployees(e.target.files?.[0] ?? null); e.currentTarget.value = '' }} />
             </label>
           )}
+          {manage && <Btn onClick={downloadEmployeeExcelTemplate} title="Prenesi lepo oblikovano Excel predlogo z navodili">⬇ Excel predloga</Btn>}
+          {manage && <Btn onClick={downloadEmployeeCsvTemplate} title="Prenesi prazno CSV predlogo za neposreden uvoz">CSV predloga</Btn>}
           {manage && <Btn kind="primary" onClick={() => setEdit(newEmployee())}>+ Nov</Btn>}
         </div>
         <div className="mt-2 rounded-lg border border-slate-200 bg-white divide-y divide-slate-100 overflow-hidden">
@@ -138,6 +187,23 @@ function parseCsvLine(line: string, delimiter: string): string[] {
   return out
 }
 
+function normalizeImportDate(value: string): string {
+  const v = value.trim()
+  if (!v) return ''
+  let y: number, m: number, d: number
+  let hit = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(v)
+  if (hit) {
+    y = Number(hit[1]); m = Number(hit[2]); d = Number(hit[3])
+  } else {
+    hit = /^(\d{1,2})[.\/-](\d{1,2})[.\/-](\d{4})\.?$/.exec(v)
+    if (!hit) return v
+    d = Number(hit[1]); m = Number(hit[2]); y = Number(hit[3])
+  }
+  const check = new Date(Date.UTC(y, m - 1, d))
+  if (check.getUTCFullYear() !== y || check.getUTCMonth() !== m - 1 || check.getUTCDate() !== d) return v
+  return `${String(y).padStart(4, '0')}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`
+}
+
 function parseEmployeesCsv(text: string): ImportedEmployee[] {
   const lines = text.replace(/^\uFEFF/, '').split(/\r?\n/).filter((x) => x.trim())
   if (lines.length < 2) return []
@@ -178,7 +244,7 @@ function parseEmployeesCsv(text: string): ImportedEmployee[] {
     const activeRaw = val(r, col.active).toLowerCase()
     rows.push({
       firstName, lastName, displayName: `${firstName} ${lastName}`.trim(),
-      dateOfBirth: val(r, col.dob), idNumber: val(r, col.id), employmentStart: val(r, col.start),
+      dateOfBirth: normalizeImportDate(val(r, col.dob)), idNumber: val(r, col.id), employmentStart: normalizeImportDate(val(r, col.start)),
       employeeNumber: val(r, col.no), phone: val(r, col.phone), vehicle: val(r, col.vehicle), notes: val(r, col.notes),
       active: activeRaw ? !['0', 'ne', 'no', 'false', 'inactive', 'neaktiven'].includes(activeRaw) : undefined,
     })

@@ -7,6 +7,7 @@ import { docDelta } from '../lib/balance'
 import { sortChrono } from '../lib/numbering'
 import { Btn, Chip, Warn, inputCls } from '../components/ui'
 import type { KnjigaJob, PrintJob } from '../print'
+import { downloadXlsx, excelDateSerial, XLSX_STYLE, type XlsxCell, type XlsxWorkbook } from '../lib/xlsx'
 
 export function ReportsView({
   onOpenDoc, onPrint,
@@ -60,44 +61,97 @@ export function ReportsView({
   const allSelected = rows.length > 0 && rows.every((d) => sel.has(d.id))
   const exportRows = sel.size > 0 ? rows.filter((d) => sel.has(d.id)) : rows
 
-  // ---------- izvoz v Excel (CSV s podpičjem — privzeto za slovenski Excel) ----------
-  function csvCell(v: string): string {
-    return /[;"\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v
-  }
-  const num = (n: number | null | undefined) => (n == null ? '' : n.toFixed(2).replace('.', ','))
+  // ---------- pravi Excel izvoz (.xlsx) ----------
+  async function exportExcel() {
+    if (exportRows.length === 0) { alert('Ni podatkov za izvoz.'); return }
 
-  async function exportCsv() {
-    const head = ['Številka', 'Datum', 'Čas', 'Tip', 'Blagajna', 'Zaposleni', 'Za (namen)', 'Konto', 'Prejemek (EUR)', 'Izdatek (EUR)', 'Status', 'Opombe']
-    const lines = [head.join(';')]
-    for (const d of exportRows) {
-      lines.push([
-        csvCell(numOf(d)),
-        d.transactionDate.split('-').reverse().join('.'),
-        d.transactionTime,
-        d.type,
-        csvCell(deskOf(d.deskId)?.name ?? d.deskId),
-        csvCell(d.employeeName),
-        csvCell(d.purpose),
-        csvCell(d.rows.map((r) => r.konto).filter(Boolean).join(', ')),
-        d.type === 'BP' ? num(d.amount) : '',
-        d.type === 'BI' ? num(d.amount) : '',
-        d.status === 'STORNIRAN' ? 'STORNIRANO' : d.status === 'ZAKLJUCEN' ? 'zaključen' : 'osnutek',
-        csvCell(d.notes || ''),
-      ].join(';'))
+    const firstDataRow = 6
+    const lastDataRow = firstDataRow + exportRows.length - 1
+    const totalRow = lastDataRow + 1
+    let bp = 0, bi = 0
+
+    const detailRows: XlsxCell[][] = [
+      [{ value: 'Poročilo blagajne', style: XLSX_STYLE.TITLE }],
+      [{ value: `Obdobje: ${fmtDate(from)} – ${fmtDate(to)}`, style: XLSX_STYLE.SUBTITLE }],
+      [{ value: `Blagajna: ${deskId ? (deskOf(deskId)?.name ?? deskId) : 'vse'}  ·  Tip: ${tip || 'vsi'}  ·  Status: ${status || 'vsi'}${sel.size > 0 ? `  ·  Izbrane vrstice: ${exportRows.length}` : ''}`, style: XLSX_STYLE.SUBTITLE }],
+      [],
+      ['Številka', 'Datum', 'Čas', 'Tip', 'Blagajna', 'Zaposleni', 'Za (namen)', 'Konto', 'Prejemek (EUR)', 'Izdatek (EUR)', 'Status', 'Opombe'].map((value) => ({ value, style: XLSX_STYLE.HEADER })),
+    ]
+
+    for (let i = 0; i < exportRows.length; i++) {
+      const d = exportRows[i]
+      const alt = i % 2 === 1
+      const base = alt ? XLSX_STYLE.BODY_ALT : XLSX_STYLE.BODY
+      const dateStyle = alt ? XLSX_STYLE.DATE_ALT : XLSX_STYLE.DATE
+      const inStyle = alt ? XLSX_STYLE.MONEY_IN_ALT : XLSX_STYLE.MONEY_IN
+      const outStyle = alt ? XLSX_STYLE.MONEY_OUT_ALT : XLSX_STYLE.MONEY_OUT
+      const statusText = d.status === 'STORNIRAN' ? 'STORNIRANO' : d.status === 'ZAKLJUCEN' ? 'zaključen' : 'osnutek'
+      const statusStyle = d.status === 'STORNIRAN' ? XLSX_STYLE.STATUS_VOID : d.status === 'ZAKLJUCEN' ? XLSX_STYLE.STATUS_CLOSED : XLSX_STYLE.STATUS_DRAFT
+      if (d.status !== 'STORNIRAN' && d.amount != null) {
+        if (d.type === 'BP') bp += d.amount
+        else bi += d.amount
+      }
+      detailRows.push([
+        { value: numOf(d), style: base },
+        { value: excelDateSerial(d.transactionDate) ?? d.transactionDate, style: dateStyle },
+        { value: d.transactionTime || '', style: base },
+        { value: d.type, style: d.type === 'BP' ? XLSX_STYLE.TYPE_BP : XLSX_STYLE.TYPE_BI },
+        { value: deskOf(d.deskId)?.name ?? d.deskId, style: base },
+        { value: d.employeeName || '', style: base },
+        { value: d.purpose || '', style: base },
+        { value: (d.rows ?? []).map((r) => r.konto).filter(Boolean).join(', '), style: base },
+        { value: d.type === 'BP' ? (d.amount ?? 0) : null, style: inStyle },
+        { value: d.type === 'BI' ? (d.amount ?? 0) : null, style: outStyle },
+        { value: statusText, style: statusStyle },
+        { value: d.notes || '', style: base },
+      ])
     }
-    lines.push('')
-    lines.push(['', '', '', '', '', '', 'Skupaj prejemki (EUR)', '', num(sums.bp), '', '', ''].join(';'))
-    lines.push(['', '', '', '', '', '', 'Skupaj izdatki (EUR)', '', '', num(sums.bi), '', ''].join(';'))
-    const name = `blagajna-izvoz-${from}-do-${to}.csv`
-    const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' })
-    const a = document.createElement('a')
-    a.href = URL.createObjectURL(blob)
-    a.download = name
-    document.body.appendChild(a)
-    a.click()
-    a.remove()
-    setTimeout(() => URL.revokeObjectURL(a.href), 5000)
-    await app.audit('Izvoz v Excel (CSV)', 'Porocilo', `${from}..${to}`, `${exportRows.length} vrstic`)
+    bp = Math.round(bp * 100) / 100
+    bi = Math.round(bi * 100) / 100
+
+    detailRows.push([
+      { value: '', style: XLSX_STYLE.TOTAL_LABEL }, { value: '', style: XLSX_STYLE.TOTAL_LABEL }, { value: '', style: XLSX_STYLE.TOTAL_LABEL },
+      { value: '', style: XLSX_STYLE.TOTAL_LABEL }, { value: '', style: XLSX_STYLE.TOTAL_LABEL }, { value: '', style: XLSX_STYLE.TOTAL_LABEL },
+      { value: 'SKUPAJ (brez storniranih)', style: XLSX_STYLE.TOTAL_LABEL }, { value: '', style: XLSX_STYLE.TOTAL_LABEL },
+      { formula: `SUMIFS(I${firstDataRow}:I${lastDataRow},K${firstDataRow}:K${lastDataRow},"<>STORNIRANO")`, result: bp, style: XLSX_STYLE.TOTAL_MONEY },
+      { formula: `SUMIFS(J${firstDataRow}:J${lastDataRow},K${firstDataRow}:K${lastDataRow},"<>STORNIRANO")`, result: bi, style: XLSX_STYLE.TOTAL_MONEY },
+      { value: '', style: XLSX_STYLE.TOTAL_LABEL }, { value: '', style: XLSX_STYLE.TOTAL_LABEL },
+    ])
+
+    const neto = Math.round((bp - bi) * 100) / 100
+    const summaryRows: XlsxCell[][] = [
+      [{ value: 'Povzetek blagajne', style: XLSX_STYLE.TITLE }],
+      [{ value: `Obdobje ${fmtDate(from)} – ${fmtDate(to)}`, style: XLSX_STYLE.SUBTITLE }],
+      [],
+      [{ value: 'Število dokumentov', style: XLSX_STYLE.HEADER }, { formula: `COUNTA(Podrobnosti!A${firstDataRow}:A${lastDataRow})`, result: exportRows.length, style: XLSX_STYLE.KPI_TEAL }],
+      [{ value: 'Prejemki', style: XLSX_STYLE.HEADER }, { formula: `SUMIFS(Podrobnosti!I${firstDataRow}:I${lastDataRow},Podrobnosti!K${firstDataRow}:K${lastDataRow},"<>STORNIRANO")`, result: bp, style: XLSX_STYLE.KPI_GREEN }],
+      [{ value: 'Izdatki', style: XLSX_STYLE.HEADER }, { formula: `SUMIFS(Podrobnosti!J${firstDataRow}:J${lastDataRow},Podrobnosti!K${firstDataRow}:K${lastDataRow},"<>STORNIRANO")`, result: bi, style: XLSX_STYLE.KPI_RED }],
+      [{ value: 'Razlika', style: XLSX_STYLE.HEADER }, { formula: 'B5-B6', result: neto, style: XLSX_STYLE.KPI_BLUE }],
+      [],
+      [{ value: 'Namig', style: XLSX_STYLE.SECTION }],
+      [{ value: 'Na listu »Podrobnosti« so v glavi stolpcev vključeni Excel filtri. Glava ostane zamrznjena med drsenjem, zneski pa so prave številčne EUR celice za nadaljnje seštevanje in analizo.', style: XLSX_STYLE.SUBTITLE }],
+    ]
+
+    const book: XlsxWorkbook = {
+      title: `Blagajna ${from}–${to}`,
+      subject: 'Izvoz blagajniških prejemkov in izdatkov',
+      creator: 'Blagajna BLU',
+      company: 'Bonta d.o.o.',
+      sheets: [
+        {
+          name: 'Povzetek', rows: summaryRows, widths: [26, 22], merges: ['A1:B1', 'A2:B2', 'A9:B9', 'A10:B10'],
+          rowHeights: { 1: 28, 4: 24, 5: 24, 6: 24, 7: 24 }, showGridLines: false, landscape: false,
+        },
+        {
+          name: 'Podrobnosti', rows: detailRows, widths: [16, 13, 9, 8, 22, 24, 34, 18, 18, 18, 15, 34],
+          merges: ['A1:L1', 'A2:L2', 'A3:L3'], freezeRows: 5, autoFilter: `A5:L${lastDataRow}`,
+          rowHeights: { 1: 28, 5: 30, [totalRow]: 24 }, showGridLines: false, landscape: true,
+        },
+      ],
+    }
+
+    downloadXlsx(book, `blagajna-izvoz-${from}-do-${to}.xlsx`)
+    await app.audit('Izvoz v Excel (.xlsx)', 'Porocilo', `${from}..${to}`, `${exportRows.length} vrstic`)
   }
 
   function printSelected() {
@@ -144,7 +198,7 @@ export function ReportsView({
       <div className="flex flex-wrap items-center gap-2">
         <h1 className="text-lg font-semibold text-slate-800">Poročila in izvoz</h1>
         <div className="flex-1" />
-        <Btn onClick={exportCsv} title="CSV s podpičjem — odpre se neposredno v Excelu">⬇️ Izvozi v Excel (CSV){sel.size > 0 ? ` — izbrane (${sel.size})` : ''}</Btn>
+        <Btn onClick={exportExcel} title="Pravi Excel .xlsx z oblikovanjem, filtri in povzetkom">⬇️ Izvozi Excel (.xlsx){sel.size > 0 ? ` — izbrane (${sel.size})` : ''}</Btn>
         <Btn onClick={printSelected} disabled={sel.size === 0} title="Natisne izbrane dokumente kot obrazce BP/BI">🖨️ Natisni izbrane ({sel.size})</Btn>
         <Btn kind="primary" onClick={printKnjiga} disabled={!deskId} title={deskId ? 'Klasična blagajniška knjiga s tekočim saldom' : 'Izberite eno blagajno'}>📒 Blagajniška knjiga</Btn>
       </div>
@@ -235,10 +289,10 @@ export function ReportsView({
       </div>
 
       <div className="mt-2 text-[11px] text-slate-400">
-        Izvoz CSV uporablja podpičje in se pravilno odpre v slovenskem Excelu. »Natisni izbrane« natisne obrazce BP/BI; »Blagajniška knjiga« natisne klasičen dnevnik s tekočim saldom za izbrano blagajno in obdobje.
+        Excel izvoz ustvari oblikovan .xlsx s povzetkom, filtri, zamrznjeno glavo in pravimi EUR celicami. »Natisni izbrane« natisne obrazce BP/BI; »Blagajniška knjiga« natisne klasičen dnevnik s tekočim saldom za izbrano blagajno in obdobje.
       </div>
       {app.mode === 'demo' && app.ephemeral && (
-        <div className="mt-2"><Warn>V predogledu v peskovniku prenosi datotek morda niso dovoljeni — izvoz CSV preizkusite v nameščeni različici.</Warn></div>
+        <div className="mt-2"><Warn>V predogledu v peskovniku prenosi datotek morda niso dovoljeni — Excel izvoz preizkusite v nameščeni različici.</Warn></div>
       )}
     </div>
   )
