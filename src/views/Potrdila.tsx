@@ -37,6 +37,8 @@ export function PotrdilaView({
         <Btn kind="primary" onClick={() => onOpenPotrdilo(null)}>+ Novo potrdilo</Btn>
       </div>
 
+      <div className="mt-3"><Warn>Potrdilo o dejavnostih ni splošno obvezen dokument. Uporablja se le kot dopolnilo v upravičenih primerih, ko dejavnosti ni bilo mogoče ustrezno zabeležiti s tahografom oziroma ročnim vnosom. Če se obrazec uporabi, mora biti pravilno izpolnjen in podpisan.</Warn></div>
+
       <div className="mt-3 overflow-x-auto rounded-lg border border-slate-200 bg-white">
         <table className="w-full text-sm min-w-[860px]">
           <thead>
@@ -307,7 +309,7 @@ function SigLine({ sig, onSign }: { sig?: { signerName: string; dataUrl?: string
           <span className="text-[12px] text-slate-500">{sig.signerName}</span>
         </div>
       ) : <span className="text-[12px] text-slate-400">ni podpisano — lahko ostane prazno za fizični podpis</span>}
-      <Btn kind="ghost" onClick={onSign}>Podpiši</Btn>
+      <Btn kind="ghost" onClick={onSign}>Podpiši na zaslonu</Btn>
     </div>
   )
 }

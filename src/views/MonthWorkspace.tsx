@@ -439,9 +439,11 @@ export function MonthWorkspace({
                   <td className="px-2 py-1">
                     <div className="flex flex-col gap-0.5 items-start">
                       {d.status === 'STORNIRAN' && <Chip tone="red">storno</Chip>}
+                      {d.status === 'ZAKLJUCEN' && <Chip tone="green">zaključen</Chip>}
+                      {d.status === 'ODPRT' && <Chip tone="amber">osnutek</Chip>}
                       {d.status === 'ODPRT' && problems.length > 0 && <Chip tone="red">nepopoln</Chip>}
+                      {d.status === 'ODPRT' && problems.length === 0 && <Chip tone="green">pripravljen za zaključek</Chip>}
                       {d.status === 'ODPRT' && d.syncStatus === 'LOKALNO' && <Chip tone="violet">lokalno</Chip>}
-                      {d.status === 'ODPRT' && problems.length === 0 && d.syncStatus !== 'LOKALNO' && <Chip tone="green">pripravljen</Chip>}
                       {d.type === 'BI' && d.status !== 'ODPRT' && d.status !== 'STORNIRAN' && (
                         <Chip tone={d.prejelStatus === 'NI_PODPISANO' ? 'amber' : 'green'}>{PREJEL_LABELS[d.prejelStatus]}</Chip>
                       )}
@@ -462,7 +464,7 @@ export function MonthWorkspace({
       </div>
 
       <div className="mt-2 text-[11px] text-slate-400">
-        Hitri vnos: <b>Enter</b> = naslednja vrstica · <b>Ctrl+D</b> = kopiraj prejšnjo vrstico · ⎘ = podvoji · številke se dodelijo šele ob zaključku meseca (kronološko po času transakcije).
+        Status dokumenta: <b>osnutek</b> ostane do akcije <b>»Zaključi mesec«</b>. Takrat dobi uradno številko in status <b>zaključen</b>. · Hitri vnos: <b>Enter</b> = naslednja vrstica · <b>Ctrl+D</b> = kopiraj prejšnjo vrstico · ⎘ = podvoji.
       </div>
 
       {wizard && !isAllDesks && (

@@ -187,41 +187,43 @@ export function ReportsView({
         {!deskId && <span className="text-[11px] text-slate-400">· za izpis blagajniške knjige izberite eno blagajno</span>}
       </div>
 
+      <div className="mt-2 text-[11px] text-slate-500">Osnutek se spremeni v zaključen dokument ob akciji <b>»Zaključi mesec«</b>; takrat dokument dobi tudi uradno številko.</div>
+
       {/* Tabela */}
       <div className="mt-3 overflow-x-auto rounded-lg border border-slate-200 bg-white">
-        <table className="w-full text-sm min-w-[900px]">
+        <table className="w-full table-fixed text-sm min-w-[1080px]">
           <thead>
             <tr className="bg-slate-50 text-[11px] uppercase tracking-wide text-slate-500 text-left">
               <th className="px-2 py-2 w-8">
                 <input type="checkbox" checked={allSelected} onChange={() => setSel(allSelected ? new Set() : new Set(rows.map((d) => d.id)))} title="Izberi vse" />
               </th>
               <th className="px-2 py-2 w-24">Številka</th>
-              <th className="px-2 py-2 w-32">Datum · čas</th>
-              <th className="px-2 py-2 w-14">Tip</th>
+              <th className="px-2 py-2 w-36">Datum · čas</th>
+              <th className="px-2 py-2 w-16">Tip</th>
               <th className="px-2 py-2 w-36">Blagajna</th>
-              <th className="px-2 py-2 w-40">Zaposleni</th>
-              <th className="px-2 py-2">Za</th>
-              <th className="px-2 py-2 w-28 text-right">Znesek</th>
-              <th className="px-2 py-2 w-24">Status</th>
+              <th className="px-2 py-2 w-44">Zaposleni</th>
+              <th className="px-2 py-2 w-64">Za</th>
+              <th className="px-2 py-2 w-32 text-right">Znesek EUR</th>
+              <th className="px-2 py-2 w-28">Status</th>
             </tr>
           </thead>
           <tbody>
             {rows.length === 0 && <tr><td colSpan={9} className="px-3 py-8 text-center text-slate-400">Ni zapisov za izbrane filtre.</td></tr>}
             {rows.map((d) => (
-              <tr key={d.id} className={cx('border-t border-slate-100 hover:bg-blu-50/40', d.status === 'STORNIRAN' && 'opacity-60')}>
+              <tr key={d.id} className={cx('border-t border-slate-100 hover:bg-blu-50/40 align-middle', d.status === 'STORNIRAN' && 'opacity-60')}>
                 <td className="px-2 py-1"><input type="checkbox" checked={sel.has(d.id)} onChange={() => toggle(d.id)} /></td>
                 <td className="px-2 py-1 font-mono text-[12px] font-semibold whitespace-nowrap">
                   {d.officialNumber != null ? numOf(d) : <span className="text-amber-600 font-sans font-normal text-[11px]">osnutek</span>}
                 </td>
-                <td className="px-2 py-1 font-mono text-[12px]">{fmtDate(d.transactionDate)} {d.transactionTime}</td>
+                <td className="px-2 py-1 font-mono text-[12px] whitespace-nowrap">{fmtDate(d.transactionDate)} {d.transactionTime}</td>
                 <td className="px-2 py-1"><Chip tone={d.type === 'BP' ? 'green' : 'red'}>{d.type}</Chip></td>
-                <td className="px-2 py-1 text-[12px]">{deskOf(d.deskId)?.name ?? d.deskId}</td>
-                <td className="px-2 py-1">{d.employeeName}</td>
+                <td className="px-2 py-1 text-[12px] truncate" title={deskOf(d.deskId)?.name ?? d.deskId}>{deskOf(d.deskId)?.name ?? d.deskId}</td>
+                <td className="px-2 py-1 truncate" title={d.employeeName}>{d.employeeName}</td>
                 <td className="px-2 py-1 text-[13px]">
-                  <button className="hover:underline text-left" onClick={() => onOpenDoc(d.id)}>{d.purpose || '—'}</button>
+                  <button className="hover:underline text-left block w-full truncate" title={d.purpose || '—'} onClick={() => onOpenDoc(d.id)}>{d.purpose || '—'}</button>
                 </td>
                 <td className={cx('px-2 py-1 text-right font-mono', d.type === 'BP' ? 'text-emerald-700' : 'text-red-700')}>
-                  {d.type === 'BP' ? '+' : '−'} {fmtNum(d.amount ?? 0)}
+                  {d.type === 'BP' ? '+' : '−'} {fmtEur(d.amount ?? 0)}
                 </td>
                 <td className="px-2 py-1">
                   {d.status === 'STORNIRAN' ? <Chip tone="red">storno</Chip> : d.status === 'ZAKLJUCEN' ? <Chip tone="green">zaključen</Chip> : <Chip tone="amber">osnutek</Chip>}

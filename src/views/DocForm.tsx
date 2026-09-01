@@ -388,7 +388,7 @@ function DocFormInner({
                 ) : (
                   <div className="mt-1 flex items-center justify-between">
                     <span className="text-[11px] text-slate-400">ni podpisano</span>
-                    <Btn kind="ghost" onClick={() => setSignRole(r)}>Podpiši</Btn>
+                    <Btn kind="ghost" onClick={() => setSignRole(r)}>Podpiši na zaslonu</Btn>
                   </div>
                 )}
               </div>

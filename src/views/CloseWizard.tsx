@@ -55,7 +55,8 @@ export function CloseWizard({
         const st = getSyncState()
         if (st.pending > 0) throw new Error('Meseca ni mogoče varno zaključiti, ker obstajajo nesinhronizirani zapisi.')
         const res = await apiCloseMonth(deskId, monthKey)
-        await app.syncNow()
+        // Ponovno preberi strežniško resnico, da se status in uradna številka takoj pokažeta tudi v poročilih.
+        await app.refreshData()
         setResult(res.close)
       } else {
         const res = await closeMonth(db, settings, deskId, monthKey, `${app.userLabel} (${role})`)

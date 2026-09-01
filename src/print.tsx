@@ -38,7 +38,7 @@ function Watermark({ text, color }: { text: string; color: string }) {
 }
 
 // ---------------------------------------------------------------- BP / BI
-export function PaperDoc({ doc, settings, desk }: { doc: CashDocument; settings: Settings; desk?: CashDesk }) {
+export function PaperDoc({ doc, settings, desk, embedded = false, copyLabel }: { doc: CashDocument; settings: Settings; desk?: CashDesk; embedded?: boolean; copyLabel?: string }) {
   const isBP = doc.type === 'BP'
   const tone = isBP ? 'text-emerald-900' : 'text-orange-950'
   const border = isBP ? 'border-emerald-800' : 'border-orange-800'
@@ -51,11 +51,10 @@ export function PaperDoc({ doc, settings, desk }: { doc: CashDocument; settings:
   const words = doc.amountWordsOverride || znesekZBesedo(doc.amount)
   const sigFor = (role: string) => doc.signatures.find((s) => s.role === role) ?? null
   const rows = doc.rows.length > 0 ? doc.rows : [{ opis: doc.purpose, konto: '', znesek: doc.amount }]
-  const gotovina = doc.paymentMethod === 'GOTOVINA'
-  const cek = doc.paymentMethod === 'CEK'
 
   return (
-    <div className={cx('paper relative bg-white', tone)}>
+    <div className={cx(embedded ? 'relative bg-white' : 'paper relative bg-white', tone)}>
+      {copyLabel && <div className="mb-1 text-right text-[8px] font-semibold uppercase tracking-wide opacity-60">{copyLabel}</div>}
       {doc.status === 'STORNIRAN' && <Watermark text="STORNIRANO" color="text-red-600 border-red-600" />}
       {doc.status === 'ODPRT' && <Watermark text="OSNUTEK · BREZ URADNE ŠTEVILKE" color="text-slate-400 border-slate-400" />}
 
@@ -86,11 +85,7 @@ export function PaperDoc({ doc, settings, desk }: { doc: CashDocument; settings:
       {/* Znesek */}
       <div className="mt-2 flex items-end gap-2">
         <span className="text-[9px] leading-3">
-          {isBP ? 'je vplačal' : 'je prejel'}{' '}
-          <span className={cx(gotovina && 'font-bold underline', cek && 'line-through opacity-50')}>z gotovino</span>
-          {' – '}
-          <span className={cx(cek && 'font-bold underline', gotovina && 'line-through opacity-50')}>s čekom</span>
-          {' '}znesek EUR
+          {isBP ? 'je vplačal' : 'je prejel'} <span className="font-bold underline">z gotovino</span> — znesek EUR
         </span>
         <span className="flex-1 border-b border-dotted border-current px-1 font-mono text-[13px] font-bold text-right min-h-[18px]">
           {doc.amount != null ? `= ${fmtNum(doc.amount)} =` : ''}
@@ -163,6 +158,20 @@ export function PaperDoc({ doc, settings, desk }: { doc: CashDocument; settings:
         <span>{settings.company.name} — interna blagajniška dokumentacija</span>
         <span>Obr. {isBP ? 'BP' : 'BI'} · Blagajna Blu</span>
       </div>
+    </div>
+  )
+}
+
+
+function PaperDocPair({ doc, settings, desk }: { doc: CashDocument; settings: Settings; desk?: CashDesk }) {
+  const personCopy = doc.type === 'BP' ? 'Izvod za vplačnika' : 'Izvod za prejemnika'
+  return (
+    <div className="paper relative bg-white">
+      <PaperDoc doc={doc} settings={settings} desk={desk} embedded copyLabel="Izvod za blagajno" />
+      <div className="my-3 border-t border-dashed border-slate-400 relative">
+        <span className="absolute -top-2.5 left-2 bg-white px-1 text-[9px] text-slate-400">✂</span>
+      </div>
+      <PaperDoc doc={doc} settings={settings} desk={desk} embedded copyLabel={personCopy} />
     </div>
   )
 }
@@ -371,7 +380,7 @@ export function PrintOverlay({ job, settings, onClose }: { job: PrintJob; settin
         <div className="text-center text-[11px] text-slate-300 print:hidden">
           Predogled tiskanja — obrazec je oblikovan po vzoru obstoječih papirnih obrazcev. Če se tiskalno okno ne odpre, uporabite nameščeno/izvoženo različico aplikacije.
         </div>
-        {job.docs?.map(({ doc, desk }) => <PaperDoc key={doc.id} doc={doc} settings={settings} desk={desk} />)}
+        {job.docs?.map(({ doc, desk }) => <PaperDocPair key={doc.id} doc={doc} settings={settings} desk={desk} />)}
         {job.potrdila?.map((p) => <PaperPotrdilo key={p.id} p={p} settings={settings} />)}
         {job.knjiga && <PaperKnjiga k={job.knjiga} settings={settings} />}
       </div>

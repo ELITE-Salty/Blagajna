@@ -50,7 +50,7 @@ export interface CashDocument {
   employeeName: string // snapshot
   amount: number | null
   amountWordsOverride: string
-  paymentMethod: 'GOTOVINA' | 'CEK' | ''
+  paymentMethod: 'GOTOVINA' | ''
   purpose: string
   rows: AccountingRow[]
   attachments: Attachment[]
@@ -216,7 +216,7 @@ export const ACTIVITY_FIELD_NO: Record<ActivityType, number> = {
 
 export const PREJEL_LABELS: Record<PrejelStatus, string> = {
   NI_PODPISANO: 'Ni podpisano',
-  DIGITALNO: 'Digitalno podpisano',
+  DIGITALNO: 'Podpisano na zaslonu',
   NATISNJENO: 'Natisnjeno za podpis',
   ROCNO: 'Ročno podpisano / potrjeno',
 }
