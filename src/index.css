@@ -1,0 +1,56 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html {
+  font-family: 'Inter', system-ui, sans-serif;
+}
+
+/* skrij puščice pri number inputih */
+input[type='number']::-webkit-outer-spin-button,
+input[type='number']::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+/* ---------- papirni obrazci ---------- */
+.paper {
+  width: 190mm;
+  max-width: 100%;
+  margin-left: auto;
+  margin-right: auto;
+  padding: 8mm 9mm;
+  background: #fff;
+  box-shadow: 0 10px 30px rgb(2 6 23 / 0.35);
+  border-radius: 3px;
+}
+.paper-a4 {
+  min-height: 255mm;
+}
+
+@media print {
+  @page {
+    size: A4 portrait;
+    margin: 8mm;
+  }
+  html,
+  body {
+    background: #fff !important;
+  }
+  .no-print {
+    display: none !important;
+  }
+  .paper {
+    width: 100% !important;
+    max-width: none !important;
+    box-shadow: none !important;
+    border-radius: 0 !important;
+    padding: 2mm 3mm !important;
+    break-after: page;
+    page-break-after: always;
+  }
+  .paper:last-child {
+    break-after: auto;
+    page-break-after: auto;
+  }
+}

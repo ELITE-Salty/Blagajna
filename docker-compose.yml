@@ -1,0 +1,17 @@
+services:
+  blagajna:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8090:8090"
+    environment:
+      # Prvi administrator se ustvari SAMO, če je baza uporabnikov prazna.
+      - ADMIN_EMAIL=${ADMIN_EMAIL:-}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
+      - ADMIN_NAME=${ADMIN_NAME:-Admin}
+      # Neobvezno — če ni nastavljeno, se skrivnost ustvari samodejno v data/jwt-secret.
+      - JWT_SECRET=${JWT_SECRET:-}
+      # Neobvezno: zunanja baza PostgreSQL (v drugem CT/VM). Brez te vrstice se uporabi SQLite v ./data.
+      - DATABASE_URL=${DATABASE_URL:-}
+    volumes:
+      - ./data:/data
