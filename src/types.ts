@@ -72,12 +72,32 @@ export interface CashDocument {
   correctionOfId?: string | null
 }
 
+export interface CashTransfer {
+  id: string
+  fromDeskId: string
+  toDeskId: string
+  transactionDate: string // YYYY-MM-DD
+  transactionTime: string // HH:mm
+  monthKey: string // YYYY-MM
+  amount: number
+  notes: string
+  syncStatus: SyncStatus
+  createdAt: string
+  createdBy: string
+  updatedAt: string
+  updatedBy: string
+}
+
 export interface CashDesk {
   id: string
   name: string
   code: string
   description: string
   active: boolean
+  /** Globalna blagajna je zbirnik lokacij in nima neposrednih dokumentov. */
+  isGroup?: boolean
+  /** Nadrejena globalna blagajna za interno lokacijo. */
+  parentId?: string | null
   /** Začetno stanje gotovine (EUR) — osnova za izračun stanja blagajne. */
   openingBalance?: number
   /** Čas zadnje spremembe za zanesljivo strežniško sinhronizacijo. */

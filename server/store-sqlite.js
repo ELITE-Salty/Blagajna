@@ -63,6 +63,8 @@ CREATE TABLE IF NOT EXISTS cash_desks (
   code TEXT NOT NULL DEFAULT '',
   description TEXT NOT NULL DEFAULT '',
   active INTEGER NOT NULL DEFAULT 1,
+  is_group INTEGER NOT NULL DEFAULT 0,
+  parent_id TEXT,
   opening_balance REAL NOT NULL DEFAULT 0,
   updated_at TEXT NOT NULL,
   deleted INTEGER NOT NULL DEFAULT 0,
@@ -70,6 +72,28 @@ CREATE TABLE IF NOT EXISTS cash_desks (
 );
 CREATE INDEX IF NOT EXISTS idx_cash_desks_name ON cash_desks (name);
 CREATE INDEX IF NOT EXISTS idx_cash_desks_seq ON cash_desks (server_seq);
+
+CREATE TABLE IF NOT EXISTS cash_transfers (
+  id TEXT PRIMARY KEY,
+  from_desk_id TEXT NOT NULL DEFAULT '',
+  to_desk_id TEXT NOT NULL DEFAULT '',
+  transaction_date TEXT NOT NULL DEFAULT '',
+  transaction_time TEXT NOT NULL DEFAULT '',
+  month_key TEXT NOT NULL DEFAULT '',
+  amount REAL NOT NULL DEFAULT 0,
+  notes TEXT NOT NULL DEFAULT '',
+  sync_status TEXT NOT NULL DEFAULT 'SINHRONIZIRANO',
+  created_at TEXT NOT NULL DEFAULT '',
+  created_by TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL,
+  updated_by TEXT NOT NULL DEFAULT '',
+  deleted INTEGER NOT NULL DEFAULT 0,
+  server_seq INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_cash_transfers_month ON cash_transfers (month_key);
+CREATE INDEX IF NOT EXISTS idx_cash_transfers_from ON cash_transfers (from_desk_id, transaction_date, transaction_time);
+CREATE INDEX IF NOT EXISTS idx_cash_transfers_to ON cash_transfers (to_desk_id, transaction_date, transaction_time);
+CREATE INDEX IF NOT EXISTS idx_cash_transfers_seq ON cash_transfers (server_seq);
 
 CREATE TABLE IF NOT EXISTS employees (
   id TEXT PRIMARY KEY,
@@ -258,13 +282,14 @@ CREATE INDEX IF NOT EXISTS idx_audit_seq ON audit (server_seq);
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
 `
 
-const SUPPORTED = new Set(['docs', 'potrdila', 'employees', 'desks', 'settings', 'closes'])
+const SUPPORTED = new Set(['docs', 'potrdila', 'employees', 'desks', 'settings', 'transfers', 'closes'])
 const topTable = {
   docs: 'cash_documents',
   potrdila: 'activity_certificates',
   employees: 'employees',
   desks: 'cash_desks',
   settings: 'app_settings',
+  transfers: 'cash_transfers',
   closes: 'month_closes',
 }
 const b = (v) => (v ? 1 : 0)
@@ -275,6 +300,9 @@ export function createSqliteStore(dataDir) {
   const db = new DatabaseSync(path.join(dataDir, 'blagajna.sqlite'))
   db.exec('PRAGMA journal_mode = WAL')
   db.exec(SCHEMA)
+  const deskCols = new Set(db.prepare('PRAGMA table_info(cash_desks)').all().map((r) => r.name))
+  if (!deskCols.has('is_group')) db.exec('ALTER TABLE cash_desks ADD COLUMN is_group INTEGER NOT NULL DEFAULT 0')
+  if (!deskCols.has('parent_id')) db.exec('ALTER TABLE cash_desks ADD COLUMN parent_id TEXT')
   db.exec(`INSERT OR IGNORE INTO meta (k, v) VALUES ('seq', '0')`)
 
   const readCompany = () => {
@@ -290,7 +318,17 @@ export function createSqliteStore(dataDir) {
     if (tbl === 'desks') {
       const r = db.prepare('SELECT * FROM cash_desks WHERE id = ?').get(id)
       if (!r) return null
-      return { json: { id: r.id, name: r.name, code: r.code, description: r.description, active: bool(r.active), openingBalance: Number(r.opening_balance ?? 0), updatedAt: r.updated_at }, updatedAt: r.updated_at, deleted: bool(r.deleted) }
+      return { json: { id: r.id, name: r.name, code: r.code, description: r.description, active: bool(r.active), isGroup: bool(r.is_group), parentId: r.parent_id ?? null, openingBalance: Number(r.opening_balance ?? 0), updatedAt: r.updated_at }, updatedAt: r.updated_at, deleted: bool(r.deleted) }
+    }
+    if (tbl === 'transfers') {
+      const r = db.prepare('SELECT * FROM cash_transfers WHERE id = ?').get(id)
+      if (!r) return null
+      return { json: {
+        id: r.id, fromDeskId: r.from_desk_id, toDeskId: r.to_desk_id,
+        transactionDate: r.transaction_date, transactionTime: r.transaction_time, monthKey: r.month_key,
+        amount: Number(r.amount ?? 0), notes: r.notes, syncStatus: r.sync_status,
+        createdAt: r.created_at, createdBy: r.created_by, updatedAt: r.updated_at, updatedBy: r.updated_by,
+      }, updatedAt: r.updated_at, deleted: bool(r.deleted) }
     }
     if (tbl === 'employees') {
       const r = db.prepare('SELECT * FROM employees WHERE id = ?').get(id)
@@ -356,9 +394,15 @@ export function createSqliteStore(dataDir) {
 
   const writeAtSeq = (tbl, id, obj, updatedAt, deleted, seq) => {
     if (tbl === 'desks') {
-      db.prepare(`INSERT INTO cash_desks (id,name,code,description,active,opening_balance,updated_at,deleted,server_seq) VALUES (?,?,?,?,?,?,?,?,?)
-        ON CONFLICT(id) DO UPDATE SET name=excluded.name,code=excluded.code,description=excluded.description,active=excluded.active,opening_balance=excluded.opening_balance,updated_at=excluded.updated_at,deleted=excluded.deleted,server_seq=excluded.server_seq`)
-        .run(id, obj.name ?? '', obj.code ?? '', obj.description ?? '', b(obj.active !== false), Number(obj.openingBalance ?? 0), updatedAt, b(deleted), seq)
+      db.prepare(`INSERT INTO cash_desks (id,name,code,description,active,is_group,parent_id,opening_balance,updated_at,deleted,server_seq) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(id) DO UPDATE SET name=excluded.name,code=excluded.code,description=excluded.description,active=excluded.active,is_group=excluded.is_group,parent_id=excluded.parent_id,opening_balance=excluded.opening_balance,updated_at=excluded.updated_at,deleted=excluded.deleted,server_seq=excluded.server_seq`)
+        .run(id, obj.name ?? '', obj.code ?? '', obj.description ?? '', b(obj.active !== false), b(!!obj.isGroup), obj.parentId ?? null, Number(obj.openingBalance ?? 0), updatedAt, b(deleted), seq)
+      return
+    }
+    if (tbl === 'transfers') {
+      db.prepare(`INSERT INTO cash_transfers (id,from_desk_id,to_desk_id,transaction_date,transaction_time,month_key,amount,notes,sync_status,created_at,created_by,updated_at,updated_by,deleted,server_seq) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(id) DO UPDATE SET from_desk_id=excluded.from_desk_id,to_desk_id=excluded.to_desk_id,transaction_date=excluded.transaction_date,transaction_time=excluded.transaction_time,month_key=excluded.month_key,amount=excluded.amount,notes=excluded.notes,sync_status=excluded.sync_status,created_at=excluded.created_at,created_by=excluded.created_by,updated_at=excluded.updated_at,updated_by=excluded.updated_by,deleted=excluded.deleted,server_seq=excluded.server_seq`)
+        .run(id, obj.fromDeskId ?? '', obj.toDeskId ?? '', obj.transactionDate ?? '', obj.transactionTime ?? '', obj.monthKey ?? '', Number(obj.amount ?? 0), obj.notes ?? '', obj.syncStatus ?? 'SINHRONIZIRANO', obj.createdAt ?? '', obj.createdBy ?? '', updatedAt, obj.updatedBy ?? '', b(deleted), seq)
       return
     }
     if (tbl === 'employees') {
@@ -504,9 +548,10 @@ export function createSqliteStore(dataDir) {
         UNION ALL SELECT 'employees',id,deleted,server_seq FROM employees WHERE server_seq > ?
         UNION ALL SELECT 'desks',id,deleted,server_seq FROM cash_desks WHERE server_seq > ?
         UNION ALL SELECT 'settings',id,deleted,server_seq FROM app_settings WHERE server_seq > ?
+        UNION ALL SELECT 'transfers',id,deleted,server_seq FROM cash_transfers WHERE server_seq > ?
         UNION ALL SELECT 'closes',id,deleted,server_seq FROM month_closes WHERE server_seq > ?
         ORDER BY server_seq
-      `).all(since, since, since, since, since, since)
+      `).all(since, since, since, since, since, since, since)
       const records = changes.map((r) => {
         const rec = r.deleted ? null : readBy(r.tbl, r.id)
         return { tbl: r.tbl, id: r.id, json: JSON.stringify(rec?.json ?? {}), deleted: Number(r.deleted), server_seq: Number(r.server_seq) }

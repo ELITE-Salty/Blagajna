@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { useApp } from '../state'
-import type { AccountingRow, CashDocument, Employee, Potrdilo, PrejelStatus } from '../types'
+import type { AccountingRow, CashDesk, CashDocument, Employee, Potrdilo, PrejelStatus } from '../types'
 import {
   PREJEL_LABELS, SIGNATURE_ROLES_BI, SIGNATURE_ROLES_BP, SIGNATURE_ROLE_LABELS,
 } from '../types'
@@ -51,7 +51,7 @@ function DocFormInner({
   doc: CashDocument
   isNew: boolean
   employees: Employee[]
-  desks: { id: string; name: string; active: boolean; code: string; description: string }[]
+  desks: CashDesk[]
   onClose: () => void
   onPrint: (job: PrintJob) => void
 }) {
@@ -90,6 +90,10 @@ function DocFormInner({
   async function save() {
     setErr('')
     const emp = employees.find((e) => e.id === d.employeeId)
+    if (desks.find((x) => x.id === d.deskId)?.isGroup) {
+      setErr('Globalna blagajna je samo skupni pregled. Izberite konkretno interno lokacijo (npr. Pisarna ali Direktor).')
+      return
+    }
     const monthKey = monthKeyOf(d.transactionDate)
     // varovalo: v zaključen mesec ni mogoče shranjevati
     const close = await db.closes.get(closeIdFor(settings, d.deskId, monthKey))
@@ -202,7 +206,7 @@ function DocFormInner({
         <Field label="Blagajna">
           <select className={inputCls} value={d.deskId} disabled={!editable} onChange={(e) => set({ deskId: e.target.value })}>
             <option value="">— izberi —</option>
-            {desks.filter((x) => x.active || x.id === d.deskId).map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
+            {desks.filter((x) => !x.isGroup && (x.active || x.id === d.deskId)).map((x) => { const parent = x.parentId ? desks.find((p) => p.id === x.parentId) : null; return <option key={x.id} value={x.id}>{parent ? `${parent.name} / ` : ''}{x.name}</option> })}
           </select>
         </Field>
         <Field label="Datum transakcije">

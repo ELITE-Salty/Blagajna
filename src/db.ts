@@ -1,18 +1,19 @@
 import Dexie, { type Table } from 'dexie'
 import type {
-  AuditEvent, CashDesk, CashDocument, DocType, Employee, MonthClose, Potrdilo, Settings,
+  AuditEvent, CashDesk, CashDocument, CashTransfer, DocType, Employee, MonthClose, Potrdilo, Settings,
 } from './types'
 import { uuid, nowIso, todayIso, nowTime, currentMonthKey } from './lib/util'
 
 export interface OutboxRow {
   k?: number
-  tbl: 'docs' | 'potrdila' | 'employees' | 'desks' | 'settings' | 'audit'
+  tbl: 'docs' | 'potrdila' | 'employees' | 'desks' | 'settings' | 'transfers' | 'audit'
   id: string
   del?: boolean
 }
 
 export class BlagajnaDB extends Dexie {
   docs!: Table<CashDocument, string>
+  transfers!: Table<CashTransfer, string>
   desks!: Table<CashDesk, string>
   employees!: Table<Employee, string>
   potrdila!: Table<Potrdilo, string>
@@ -39,6 +40,9 @@ export class BlagajnaDB extends Dexie {
     })
     this.version(3).stores({
       outbox: '++k, tbl, [tbl+id]',
+    })
+    this.version(4).stores({
+      transfers: 'id, monthKey, fromDeskId, toDeskId, syncStatus',
     })
   }
 }
@@ -169,8 +173,9 @@ async function seedIfEmpty(db: BlagajnaDB) {
   }
 
   const desks: CashDesk[] = [
-    { id: 'gb', name: 'Glavna blagajna', code: 'GB', description: 'Pisarna Ljubljana', active: true, openingBalance: 1000, updatedAt: nowIso() },
-    { id: 'b2', name: 'Blagajna 2', code: 'B2', description: '', active: true, openingBalance: 250, updatedAt: nowIso() },
+    { id: 'gbg', name: 'Glavna blagajna', code: 'GB', description: 'Skupni pregled vseh internih lokacij', active: true, isGroup: true, parentId: null, openingBalance: 0, updatedAt: nowIso() },
+    { id: 'gb', name: 'Pisarna', code: 'GB-P', description: 'Pisarna Ljubljana', active: true, isGroup: false, parentId: 'gbg', openingBalance: 1000, updatedAt: nowIso() },
+    { id: 'b2', name: 'Direktor', code: 'GB-D', description: 'Interna blagajna direktorja', active: true, isGroup: false, parentId: 'gbg', openingBalance: 250, updatedAt: nowIso() },
   ]
 
   const mkEmp = (id: string, fn: string, ln: string, dob: string, idn: string, start: string, vehicle: string): Employee => ({

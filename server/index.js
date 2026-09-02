@@ -111,7 +111,7 @@ app.patch('/api/users/:id', auth, requireAdmin, async (req, res) => {
 })
 
 // ---------------- sinhronizacija ----------------
-const SYNC_TABLES = ['docs', 'potrdila', 'employees', 'desks', 'settings']
+const SYNC_TABLES = ['docs', 'potrdila', 'employees', 'desks', 'settings', 'transfers']
 const ADMIN_TABLES = new Set(['employees', 'desks', 'settings'])
 const PROTECTED = ['officialNumber', 'seqYear', 'transactionDate', 'transactionTime', 'employeeId', 'deskId', 'amount', 'type', 'monthKey']
 const LOCAL_ONLY_SETTINGS = ['currentRole', 'currentUserName', 'activeDeskId']
@@ -125,7 +125,7 @@ function sanitizeSettings(json) {
 app.post('/api/sync/push', auth, async (req, res) => {
   const body = req.body || {}
   const conflicts = []
-  const accepted = { docs: [], potrdila: [], employees: [], desks: [], settings: [], deletes: [] }
+  const accepted = { docs: [], potrdila: [], employees: [], desks: [], settings: [], transfers: [], deletes: [] }
   try {
     await store.tx(async (s) => {
       for (const tbl of SYNC_TABLES) {
@@ -165,6 +165,14 @@ app.post('/api/sync/push', auth, async (req, res) => {
               continue
             }
           }
+          if (tbl === 'transfers') {
+            const closes = await s.listTable('closes')
+            const hit = closes.find((c) => c.monthKey === rec.monthKey && (c.scopeKey === 'COMPANY' || c.scopeKey === rec.fromDeskId || c.scopeKey === rec.toDeskId))
+            if (hit) {
+              conflicts.push({ tbl, id: rec.id, reason: `Mesec ${rec.monthKey} je že zaključen za eno od blagajn.`, server: existing?.json ?? null })
+              continue
+            }
+          }
           await s.putRecord(tbl, rec.id, { ...rec, syncStatus: 'SINHRONIZIRANO' }, rec.updatedAt || nowIso())
           accepted[tbl].push(rec.id)
         }
@@ -178,6 +186,15 @@ app.post('/api/sync/push', auth, async (req, res) => {
           if (tbl === 'docs' && existing.json.status !== 'ODPRT') {
             conflicts.push({ tbl, id, reason: 'Zaključenega dokumenta ni mogoče izbrisati — uporabite storno.', server: existing.json })
             continue
+          }
+          if (tbl === 'transfers') {
+            const closes = await s.listTable('closes')
+            const rec = existing.json
+            const hit = closes.find((c) => c.monthKey === rec.monthKey && (c.scopeKey === 'COMPANY' || c.scopeKey === rec.fromDeskId || c.scopeKey === rec.toDeskId))
+            if (hit) {
+              conflicts.push({ tbl, id, reason: 'Prenosa iz zaključenega meseca ni mogoče izbrisati.', server: existing.json })
+              continue
+            }
           }
           if (ADMIN_TABLES.has(tbl) && req.user.role !== 'ADMIN') {
             conflicts.push({ tbl, id, reason: 'Potrebna je vloga Admin.', server: existing.json })
@@ -202,7 +219,7 @@ app.post('/api/sync/push', auth, async (req, res) => {
 app.get('/api/sync/pull', auth, async (req, res) => {
   const since = parseInt(String(req.query.since || '0'), 10) || 0
   const { records, audit } = await store.pullSince(since)
-  const out = { docs: [], potrdila: [], employees: [], desks: [], settings: [], closes: [], deletes: [], audit }
+  const out = { docs: [], potrdila: [], employees: [], desks: [], settings: [], transfers: [], closes: [], deletes: [], audit }
   let cursor = since
   for (const r of records) {
     cursor = Math.max(cursor, Number(r.server_seq))

@@ -208,3 +208,15 @@ Tabele `records` ne brišite ročno; ostane kot legacy varnostna sled in se za n
 - dnevniki: `docker compose logs -f blagajna`
 - Aplikacija v brskalniku javi »DEMO« → brskalnik ne doseže API-ja na istem naslovu (preverite proxy/port).
 - Pozabljeno admin geslo → na strežniku zaženite z novim `ADMIN_EMAIL`/`ADMIN_PASSWORD` **ne pomaga** (uporabniki že obstajajo); geslo ponastavi drug administrator v Nastavitve → Uporabniki. Če ni nobenega administratorja več, izbrišite datoteko `data/blagajna.sqlite` (izgubite podatke!) ali nas kontaktirajte za SQL ukaz.
+
+### Preverjanje različice v4 (interni prenosi)
+
+Po nadgradnji mora biti v modrem bloku **Hierarhija blagajne** vidna značka **v4 · interni prenosi**.
+Če je ne vidite, strežnik še vedno streže star frontend. Pri Docker namestitvi ponovno zaženite:
+
+```bash
+docker compose up -d --build --force-recreate
+```
+
+Nato v brskalniku naredite trdi refresh (`Ctrl+Shift+R` oziroma `Cmd+Shift+R`).
+V v4 je gumb **↔ Interni prenos** v modrem bloku hierarhije in tudi v vrstici akcij nad tabelo, kadar ima ista glavna blagajna vsaj dve aktivni interni blagajni.

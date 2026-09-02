@@ -8,6 +8,7 @@ import { docDelta } from '../lib/balance'
 import { Btn, Chip, ErrBox, Field, Modal, Warn, inputCls } from '../components/ui'
 import { apiCreateUser, apiUpdateUser, apiUsers, type AppUser } from '../lib/api'
 import { putDesk, updateDesk } from '../lib/persist'
+import { descendantLocationIds } from '../lib/desks'
 
 export function SettingsView() {
   const app = useApp()
@@ -19,6 +20,10 @@ export function SettingsView() {
     const m = new Map<string, number>()
     for (const d of desks) m.set(d.id, d.openingBalance ?? 0)
     for (const doc of allDocs) m.set(doc.deskId, Math.round(((m.get(doc.deskId) ?? 0) + docDelta(doc)) * 100) / 100)
+    for (const d of desks.filter((x) => x.isGroup)) {
+      const total = descendantLocationIds(desks, d.id).reduce((sum, id) => sum + (m.get(id) ?? 0), 0)
+      m.set(d.id, Math.round(total * 100) / 100)
+    }
     return m
   }, [desks, allDocs])
   const [c, setC] = useState<CompanyInfo>({ ...settings.company })
@@ -61,20 +66,51 @@ export function SettingsView() {
       {/* Blagajne */}
       <section className="rounded-lg border border-slate-200 bg-white p-4">
         <div className="flex items-center justify-between">
-          <h2 className="font-semibold text-slate-800">Blagajne</h2>
-          <Btn kind="primary" onClick={async () => {
-            const name = window.prompt('Ime nove blagajne:')
-            if (!name?.trim()) return
-            const d: CashDesk = { id: uuid(), name: name.trim(), code: '', description: '', active: true, openingBalance: 0 }
-            await putDesk(db, d)
-            await app.audit('Nova blagajna', 'Blagajna', d.id, d.name)
-            if (!app.settings.activeDeskId) await app.saveSettings({ activeDeskId: d.id })
-          }}>+ Nova blagajna</Btn>
+          <div>
+            <h2 className="font-semibold text-slate-800">Struktura blagajn</h2>
+            <div className="text-[11px] text-slate-400 mt-0.5">Glavna/globalna blagajna je zbirnik; dokumenti in gotovina so na internih blagajnah pod njo.</div>
+          </div>
+          <div className="flex gap-2">
+            <Btn onClick={async () => {
+              const name = window.prompt('Ime glavne/globalne blagajne:', 'Glavna blagajna')
+              if (!name?.trim()) return
+              const d: CashDesk = { id: uuid(), name: name.trim(), code: '', description: '', active: true, openingBalance: 0, isGroup: true, parentId: null }
+              await putDesk(db, d)
+              await app.audit('Nova globalna blagajna', 'Blagajna', d.id, d.name)
+            }}>+ Glavna / globalna</Btn>
+            <Btn kind="primary" onClick={async () => {
+              const name = window.prompt('Ime nove interne blagajne/lokacije:')
+              if (!name?.trim()) return
+              const groups = desks.filter((x) => x.isGroup && x.active)
+              const d: CashDesk = { id: uuid(), name: name.trim(), code: '', description: '', active: true, openingBalance: 0, isGroup: false, parentId: groups[0]?.id ?? null }
+              await putDesk(db, d)
+              await app.audit('Nova lokacija blagajne', 'Blagajna', d.id, `${d.name}${groups[0] ? ` · ${groups[0].name}` : ''}`)
+              if (!app.settings.activeDeskId) await app.saveSettings({ activeDeskId: d.id })
+            }}>+ Interna blagajna</Btn>
+          </div>
         </div>
-        <div className="mt-3 space-y-2">
-          {desks.map((d) => <DeskRow key={d.id} d={d} current={balances.get(d.id) ?? d.openingBalance ?? 0} />)}
+        <div className="mt-3 space-y-3">
+          {desks.filter((d) => d.isGroup).sort((a, b) => a.name.localeCompare(b.name)).map((g) => {
+            const children = desks.filter((d) => !d.isGroup && d.parentId === g.id).sort((a, b) => a.name.localeCompare(b.name))
+            return (
+              <div key={g.id} className="rounded-lg border border-blu-200 bg-blu-50/40 p-2">
+                <DeskRow d={g} desks={desks} current={balances.get(g.id) ?? 0} />
+                <div className="ml-5 mt-2 border-l-2 border-blu-200 pl-3 space-y-2">
+                  <div className="text-[10px] font-bold uppercase tracking-wide text-blu-600">Interne blagajne pod {g.name}</div>
+                  {children.map((d) => <DeskRow key={d.id} d={d} desks={desks} current={balances.get(d.id) ?? d.openingBalance ?? 0} />)}
+                  {children.length === 0 && <div className="text-[12px] text-slate-400 py-1">Ni internih blagajn. Dodajte jo z gumbom »+ Interna blagajna« in izberite to glavno blagajno.</div>}
+                </div>
+              </div>
+            )
+          })}
+          {desks.some((d) => !d.isGroup && !d.parentId) && (
+            <div className="rounded-lg border border-slate-200 p-2">
+              <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400 mb-2">Samostojne / še nepovezane blagajne</div>
+              <div className="space-y-2">{desks.filter((d) => !d.isGroup && !d.parentId).sort((a, b) => a.name.localeCompare(b.name)).map((d) => <DeskRow key={d.id} d={d} desks={desks} current={balances.get(d.id) ?? d.openingBalance ?? 0} />)}</div>
+            </div>
+          )}
         </div>
-        <div className="mt-2 text-[11px] text-slate-400">Trenutno stanje = začetno stanje + vsi prejemki − vsi izdatki (storno se ne šteje). Izdatek v aplikaciji ne more preseči stanja blagajne.</div>
+        <div className="mt-2 text-[11px] text-slate-400">Primer: <b>Glavna blagajna (GB)</b> → <b>Pisarna</b> + <b>Direktor</b>. V zavihku Blagajna izberite GB za skupno stanje ali eno od podrejenih internih blagajn za njen lasten promet. Dokumenti se vedno knjižijo na konkretno interno blagajno.</div>
       </section>
 
       {/* Številčenje */}
@@ -237,7 +273,7 @@ function NewUserModal({ onClose, onDone }: { onClose: () => void; onDone: () => 
   )
 }
 
-function DeskRow({ d, current }: { d: CashDesk; current: number }) {
+function DeskRow({ d, desks, current }: { d: CashDesk; desks: CashDesk[]; current: number }) {
   const app = useApp()
   const { db } = app
   const [name, setName] = useState(d.name)
@@ -284,17 +320,31 @@ function DeskRow({ d, current }: { d: CashDesk; current: number }) {
   }
 
   return (
-    <div className="flex flex-wrap items-center gap-2">
-      <input className={cx(inputCls, 'w-64')} value={name} onChange={(e) => setName(e.target.value)}
+    <div className={cx('flex flex-wrap items-center gap-2 rounded-md px-2 py-1.5', d.isGroup && 'bg-blu-50 border border-blu-100')}>
+      <input className={cx(inputCls, 'w-56', d.isGroup && 'font-semibold')} value={name} onChange={(e) => setName(e.target.value)}
         onBlur={() => void saveName()} />
-      <input className={cx(inputCls, 'w-24 font-mono')} placeholder="oznaka" value={code} onChange={(e) => setCode(e.target.value)}
+      <input className={cx(inputCls, 'w-20 font-mono')} placeholder="oznaka" value={code} onChange={(e) => setCode(e.target.value)}
         onBlur={() => void saveCode()} />
-      <label className="flex items-center gap-1.5 text-[12px] text-slate-500">
-        začetno stanje
-        <input className={cx(inputCls, 'w-28 font-mono text-right')} inputMode="decimal" value={opening} onChange={(e) => setOpening(e.target.value)}
-          onBlur={() => void saveOpening()} />
-      </label>
-      <Chip tone={current < 0 ? 'red' : 'blue'}>trenutno: {fmtEur(current)}</Chip>
+      {d.isGroup ? (
+        <><Chip tone="blue">GLOBALNA</Chip><Chip tone={current < 0 ? 'red' : 'blue'}>skupaj: {fmtEur(current)}</Chip></>
+      ) : (
+        <>
+          <select className={cx(inputCls, 'w-44')} value={d.parentId ?? ''} onChange={async (e) => {
+            await updateDesk(db, d.id, { parentId: e.target.value || null })
+            await app.audit('Sprememba globalne blagajne lokacije', 'Blagajna', d.id, e.target.value || 'brez')
+            await syncIfNeeded()
+          }}>
+            <option value="">— brez globalne —</option>
+            {desks.filter((x) => x.isGroup && x.id !== d.id).map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+          </select>
+          <label className="flex items-center gap-1.5 text-[12px] text-slate-500">
+            začetno stanje
+            <input className={cx(inputCls, 'w-28 font-mono text-right')} inputMode="decimal" value={opening} onChange={(e) => setOpening(e.target.value)}
+              onBlur={() => void saveOpening()} />
+          </label>
+          <Chip tone={current < 0 ? 'red' : 'blue'}>trenutno: {fmtEur(current)}</Chip>
+        </>
+      )}
       {d.active ? <Chip tone="green">aktivna</Chip> : <Chip tone="slate">neaktivna</Chip>}
       <Btn onClick={async () => { await updateDesk(db, d.id, { active: !d.active }); await app.audit('Sprememba blagajne', 'Blagajna', d.id, d.active ? 'deaktivirana' : 'aktivirana'); await syncIfNeeded() }}>
         {d.active ? 'Deaktiviraj' : 'Aktiviraj'}

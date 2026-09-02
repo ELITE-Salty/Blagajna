@@ -1,12 +1,13 @@
 import React, { useMemo, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { useApp } from '../state'
-import type { CashDocument, DocType } from '../types'
+import type { CashDocument, CashTransfer, DocType } from '../types'
 import { cx, currentMonthKey, docNo, fmtDate, fmtEur, fmtNum, todayIso, txAt } from '../lib/util'
-import { docDelta } from '../lib/balance'
+import { docDelta, transferDelta } from '../lib/balance'
 import { sortChrono } from '../lib/numbering'
 import { Btn, Chip, Warn, inputCls } from '../components/ui'
 import type { KnjigaJob, PrintJob } from '../print'
+import { locationIdsForView } from '../lib/desks'
 
 export function ReportsView({
   onOpenDoc, onPrint,
@@ -33,16 +34,37 @@ export function ReportsView({
   const desks = useLiveQuery(() => db.desks.toArray(), []) ?? []
   const employees = useLiveQuery(() => db.employees.toArray(), []) ?? []
   const allDocs = useLiveQuery(() => db.docs.toArray(), []) ?? []
+  const allTransfers = useLiveQuery(() => db.transfers.toArray(), []) ?? []
+
+  const selectedDesk = desks.find((d) => d.id === deskId)
+  const selectedDeskIds = deskId ? new Set(locationIdsForView(desks, deskId)) : null
 
   const rows = useMemo(() => {
     return allDocs
       .filter((d) => d.transactionDate >= from && d.transactionDate <= to)
-      .filter((d) => !deskId || d.deskId === deskId)
+      .filter((d) => !selectedDeskIds || selectedDeskIds.has(d.deskId))
       .filter((d) => !tip || d.type === tip)
       .filter((d) => !emp || d.employeeId === emp)
       .filter((d) => !status || d.status === status)
       .sort(sortChrono)
-  }, [allDocs, from, to, deskId, tip, emp, status])
+  }, [allDocs, from, to, deskId, desks, tip, emp, status])
+
+  const transferRows = useMemo(() => allTransfers
+    .filter((t) => t.transactionDate >= from && t.transactionDate <= to)
+    .filter((t) => !selectedDeskIds || selectedDeskIds.has(t.fromDeskId) || selectedDeskIds.has(t.toDeskId))
+    .sort((a, b) => `${a.transactionDate}T${a.transactionTime}`.localeCompare(`${b.transactionDate}T${b.transactionTime}`) || a.createdAt.localeCompare(b.createdAt)),
+    [allTransfers, from, to, deskId, desks],
+  )
+
+  const transferSums = useMemo(() => {
+    if (!selectedDeskIds) return { incoming: 0, outgoing: 0 }
+    let incoming = 0, outgoing = 0
+    for (const t of transferRows) {
+      if (selectedDeskIds.has(t.toDeskId)) incoming += t.amount
+      if (selectedDeskIds.has(t.fromDeskId)) outgoing += t.amount
+    }
+    return { incoming: Math.round(incoming * 100) / 100, outgoing: Math.round(outgoing * 100) / 100 }
+  }, [transferRows, deskId, desks])
 
   const sums = useMemo(() => {
     let bp = 0, bi = 0
@@ -100,6 +122,30 @@ export function ReportsView({
     await app.audit('Izvoz v Excel (CSV)', 'Porocilo', `${from}..${to}`, `${exportRows.length} vrstic`)
   }
 
+  async function exportTransfersCsv() {
+    const head = ['Datum', 'Čas', 'Iz blagajne', 'V blagajno', 'Znesek (EUR)', 'Opomba']
+    const lines = [head.join(';')]
+    for (const t of transferRows) {
+      lines.push([
+        t.transactionDate.split('-').reverse().join('.'),
+        t.transactionTime,
+        csvCell(deskOf(t.fromDeskId)?.name ?? t.fromDeskId),
+        csvCell(deskOf(t.toDeskId)?.name ?? t.toDeskId),
+        num(t.amount),
+        csvCell(t.notes || ''),
+      ].join(';'))
+    }
+    const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' })
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(blob)
+    a.download = `interni-prenosi-${from}-do-${to}.csv`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000)
+    await app.audit('Izvoz internih prenosov (CSV)', 'Porocilo', `${from}..${to}`, `${transferRows.length} prenosov`)
+  }
+
   function printSelected() {
     const docs = rows.filter((d) => sel.has(d.id))
     if (docs.length === 0) return
@@ -107,37 +153,62 @@ export function ReportsView({
   }
 
   async function printKnjiga() {
-    if (!deskId) return
+    if (!deskId || selectedDesk?.isGroup) return
     const desk = deskOf(deskId)
     const deskDocs = allDocs.filter((d) => d.deskId === deskId)
+    const deskTransfers = allTransfers.filter((t) => t.fromDeskId === deskId || t.toDeskId === deskId)
     const fromT = `${from}T00:00`
-    let saldo = (desk?.openingBalance ?? 0) + deskDocs.filter((d) => txAt(d) < fromT).reduce((s, d) => s + docDelta(d), 0)
+    let saldo = (desk?.openingBalance ?? 0)
+      + deskDocs.filter((d) => txAt(d) < fromT).reduce((sum, d) => sum + docDelta(d), 0)
+      + deskTransfers.filter((t) => `${t.transactionDate}T${t.transactionTime}` < fromT).reduce((sum, t) => sum + transferDelta(t, deskId), 0)
     saldo = Math.round(saldo * 100) / 100
     const start = saldo
-    const kRows = rows.filter((d) => d.deskId === deskId).map((d) => {
-      const delta = docDelta(d)
+
+    const events: Array<{ at: string; createdAt: string; id: string; doc?: CashDocument; transfer?: CashTransfer }> = [
+      ...rows.filter((d) => d.deskId === deskId).map((doc) => ({ at: txAt(doc), createdAt: doc.createdAt, id: doc.id, doc })),
+      ...transferRows.filter((t) => t.fromDeskId === deskId || t.toDeskId === deskId).map((transfer) => ({ at: `${transfer.transactionDate}T${transfer.transactionTime}`, createdAt: transfer.createdAt, id: transfer.id, transfer })),
+    ].sort((a, b) => a.at.localeCompare(b.at) || a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id))
+
+    let totIn = 0, totOut = 0
+    const kRows = events.map((event) => {
+      if (event.doc) {
+        const d = event.doc
+        const delta = docDelta(d)
+        saldo = Math.round((saldo + delta) * 100) / 100
+        if (delta > 0) totIn += delta
+        if (delta < 0) totOut += -delta
+        return {
+          num: numOf(d), date: d.transactionDate, time: d.transactionTime,
+          opis: d.purpose || '—', emp: d.employeeName,
+          bp: d.type === 'BP' && d.status !== 'STORNIRAN' ? d.amount : null,
+          bi: d.type === 'BI' && d.status !== 'STORNIRAN' ? d.amount : null,
+          saldo, storno: d.status === 'STORNIRAN',
+        }
+      }
+      const t = event.transfer!
+      const delta = transferDelta(t, deskId)
       saldo = Math.round((saldo + delta) * 100) / 100
+      if (delta > 0) totIn += delta
+      else totOut += -delta
+      const fromName = deskOf(t.fromDeskId)?.name ?? t.fromDeskId
+      const toName = deskOf(t.toDeskId)?.name ?? t.toDeskId
       return {
-        num: numOf(d),
-        date: d.transactionDate,
-        time: d.transactionTime,
-        opis: d.purpose || '—',
-        emp: d.employeeName,
-        bp: d.type === 'BP' && d.status !== 'STORNIRAN' ? d.amount : null,
-        bi: d.type === 'BI' && d.status !== 'STORNIRAN' ? d.amount : null,
-        saldo,
-        storno: d.status === 'STORNIRAN',
+        num: 'PRENOS', date: t.transactionDate, time: t.transactionTime,
+        opis: `Interni prenos: ${fromName} → ${toName}${t.notes ? ` · ${t.notes}` : ''}`,
+        emp: '—', bp: delta > 0 ? t.amount : null, bi: delta < 0 ? t.amount : null, saldo,
       }
     })
+
     const k: KnjigaJob = {
       deskName: desk?.name ?? deskId,
       from, to, start, end: saldo,
-      totBP: sums.bp, totBI: sums.bi,
+      totBP: Math.round(totIn * 100) / 100, totBI: Math.round(totOut * 100) / 100,
       rows: kRows,
     }
     await app.audit('Izpis blagajniške knjige', 'Porocilo', `${from}..${to}`, `${kRows.length} vrstic · ${desk?.name}`)
     onPrint({ title: `Blagajniška knjiga — ${desk?.name}`, knjiga: k })
   }
+
 
   return (
     <div>
@@ -145,8 +216,9 @@ export function ReportsView({
         <h1 className="text-lg font-semibold text-slate-800">Poročila in izvoz</h1>
         <div className="flex-1" />
         <Btn onClick={exportCsv} title="CSV s podpičjem — odpre se neposredno v Excelu">⬇️ Izvozi v Excel (CSV){sel.size > 0 ? ` — izbrane (${sel.size})` : ''}</Btn>
+        <Btn onClick={exportTransfersCsv} disabled={transferRows.length === 0} title="Ločen izvoz internih prenosov med blagajnami">↔ Izvozi interne prenose CSV</Btn>
         <Btn onClick={printSelected} disabled={sel.size === 0} title="Natisne izbrane dokumente kot obrazce BP/BI">🖨️ Natisni izbrane ({sel.size})</Btn>
-        <Btn kind="primary" onClick={printKnjiga} disabled={!deskId} title={deskId ? 'Klasična blagajniška knjiga s tekočim saldom' : 'Izberite eno blagajno'}>📒 Blagajniška knjiga</Btn>
+        <Btn kind="primary" onClick={printKnjiga} disabled={!deskId || !!selectedDesk?.isGroup} title={selectedDesk?.isGroup ? 'Za klasično blagajniško knjigo izberite eno interno lokacijo.' : deskId ? 'Klasična blagajniška knjiga s tekočim saldom' : 'Izberite eno blagajno'}>📒 Blagajniška knjiga</Btn>
       </div>
 
       {/* Filtri */}
@@ -159,7 +231,8 @@ export function ReportsView({
         </label>
         <select className={cx(inputCls, 'w-auto')} value={deskId} onChange={(e) => setDeskId(e.target.value)}>
           <option value="">Vse blagajne</option>
-          {desks.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
+          {desks.filter((x) => x.isGroup).map((g) => <React.Fragment key={g.id}><option value={g.id}>🏦 {g.name} — SKUPAJ</option>{desks.filter((d) => d.parentId === g.id && !d.isGroup).map((d) => <option key={d.id} value={d.id}>　↳ {d.name}</option>)}</React.Fragment>)}
+          {desks.filter((d) => !d.isGroup && !d.parentId).map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
         </select>
         <select className={cx(inputCls, 'w-auto')} value={tip} onChange={(e) => setTip(e.target.value as any)}>
           <option value="">Vsi tipi</option>
@@ -184,7 +257,9 @@ export function ReportsView({
         <Chip tone="green">prejemki: {fmtEur(sums.bp)}</Chip>
         <Chip tone="red">izdatki: {fmtEur(sums.bi)}</Chip>
         <Chip tone={sums.neto < 0 ? 'red' : 'blue'}>razlika: {fmtEur(sums.neto)}</Chip>
-        {!deskId && <span className="text-[11px] text-slate-400">· za izpis blagajniške knjige izberite eno blagajno</span>}
+        {selectedDeskIds && transferRows.length > 0 && <Chip tone="green">interni prenosi noter: {fmtEur(transferSums.incoming)}</Chip>}
+        {selectedDeskIds && transferRows.length > 0 && <Chip tone="red">interni prenosi ven: {fmtEur(transferSums.outgoing)}</Chip>}
+        {(!deskId || selectedDesk?.isGroup) && <span className="text-[11px] text-slate-400">· za klasično blagajniško knjigo izberite eno interno lokacijo; globalna blagajna je skupni pregled</span>}
       </div>
 
       <div className="mt-2 text-[11px] text-slate-500">Osnutek se spremeni v zaključen dokument ob akciji <b>»Zaključi mesec«</b>; takrat dokument dobi tudi uradno številko.</div>
@@ -232,6 +307,19 @@ export function ReportsView({
             ))}
           </tbody>
         </table>
+      </div>
+
+      <div className="mt-4">
+        <div className="flex items-center gap-2 mb-1.5"><span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">↔ Interni prenosi</span><Chip>{transferRows.length}</Chip></div>
+        <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
+          <table className="w-full text-sm min-w-[700px]">
+            <thead className="bg-slate-50 text-[11px] uppercase tracking-wide text-slate-500 text-left"><tr><th className="px-2 py-2">Datum · čas</th><th className="px-2 py-2">Iz blagajne</th><th className="px-2 py-2">V blagajno</th><th className="px-2 py-2 text-right">Znesek</th><th className="px-2 py-2">Opomba</th></tr></thead>
+            <tbody>
+              {transferRows.length === 0 && <tr><td colSpan={5} className="px-3 py-5 text-center text-slate-400">Ni internih prenosov v izbranem obdobju.</td></tr>}
+              {transferRows.map((t) => <tr key={t.id} className="border-t border-slate-100"><td className="px-2 py-1.5 font-mono text-[12px]">{fmtDate(t.transactionDate)} {t.transactionTime}</td><td className="px-2 py-1.5 text-red-700 font-medium">{deskOf(t.fromDeskId)?.name ?? t.fromDeskId}</td><td className="px-2 py-1.5 text-emerald-700 font-medium">{deskOf(t.toDeskId)?.name ?? t.toDeskId}</td><td className="px-2 py-1.5 text-right font-mono font-semibold">{fmtEur(t.amount)}</td><td className="px-2 py-1.5">{t.notes || '—'}</td></tr>)}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       <div className="mt-2 text-[11px] text-slate-400">

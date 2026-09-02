@@ -113,7 +113,7 @@ export function Btn({
 }: {
   children: React.ReactNode
   onClick?: () => void
-  kind?: 'default' | 'primary' | 'danger' | 'ghost' | 'success'
+  kind?: 'default' | 'primary' | 'danger' | 'ghost' | 'success' | 'violet'
   disabled?: boolean
   title?: string
   type?: 'button' | 'submit'
@@ -125,6 +125,7 @@ export function Btn({
     success: 'bg-emerald-600 text-white hover:bg-emerald-700 shadow-sm',
     danger: 'bg-red-600 text-white hover:bg-red-700 shadow-sm',
     ghost: 'text-blu-600 hover:bg-blu-50',
+    violet: 'bg-violet-600 text-white hover:bg-violet-700 shadow-sm',
   }
   return (
     <button type={type ?? 'button'} className={cx(base, kinds[kind])} onClick={onClick} disabled={disabled} title={title}>

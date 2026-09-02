@@ -1,5 +1,5 @@
 import type { BlagajnaDB, OutboxRow } from '../db'
-import type { AuditEvent, CashDesk, Employee, Settings } from '../types'
+import type { AuditEvent, CashDesk, CashTransfer, Employee, Settings } from '../types'
 import { nowIso } from './util'
 
 type QueuedTable = OutboxRow['tbl']
@@ -80,5 +80,22 @@ export async function deleteDocument(db: BlagajnaDB, id: string): Promise<void> 
   await db.transaction('rw', db.docs, db.outbox, async () => {
     await db.docs.delete(id)
     await replaceQueueEntry(db, 'docs', id, true)
+  })
+}
+
+
+export async function putTransfer(db: BlagajnaDB, transfer: CashTransfer): Promise<CashTransfer> {
+  const result = { ...transfer, updatedAt: nowIso(), syncStatus: 'LOKALNO' as const }
+  await db.transaction('rw', db.transfers, db.outbox, async () => {
+    await db.transfers.put(result)
+    await replaceQueueEntry(db, 'transfers', result.id)
+  })
+  return result
+}
+
+export async function deleteTransfer(db: BlagajnaDB, id: string): Promise<void> {
+  await db.transaction('rw', db.transfers, db.outbox, async () => {
+    await db.transfers.delete(id)
+    await replaceQueueEntry(db, 'transfers', id, true)
   })
 }

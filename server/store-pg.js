@@ -47,8 +47,15 @@ const NORMALIZED_SCHEMA = [
   )`,
   `CREATE TABLE IF NOT EXISTS cash_desks (
     id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', code TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '',
-    active BOOLEAN NOT NULL DEFAULT TRUE, opening_balance DOUBLE PRECISION NOT NULL DEFAULT 0,
+    active BOOLEAN NOT NULL DEFAULT TRUE, is_group BOOLEAN NOT NULL DEFAULT FALSE, parent_id TEXT, opening_balance DOUBLE PRECISION NOT NULL DEFAULT 0,
     updated_at TEXT NOT NULL, deleted BOOLEAN NOT NULL DEFAULT FALSE, server_seq BIGINT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS cash_transfers (
+    id TEXT PRIMARY KEY, from_desk_id TEXT NOT NULL DEFAULT '', to_desk_id TEXT NOT NULL DEFAULT '',
+    transaction_date TEXT NOT NULL DEFAULT '', transaction_time TEXT NOT NULL DEFAULT '', month_key TEXT NOT NULL DEFAULT '',
+    amount DOUBLE PRECISION NOT NULL DEFAULT 0, notes TEXT NOT NULL DEFAULT '', sync_status TEXT NOT NULL DEFAULT 'SINHRONIZIRANO',
+    created_at TEXT NOT NULL DEFAULT '', created_by TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL, updated_by TEXT NOT NULL DEFAULT '',
+    deleted BOOLEAN NOT NULL DEFAULT FALSE, server_seq BIGINT NOT NULL
   )`,
   `CREATE TABLE IF NOT EXISTS employees (
     id TEXT PRIMARY KEY, first_name TEXT NOT NULL DEFAULT '', last_name TEXT NOT NULL DEFAULT '', display_name TEXT NOT NULL DEFAULT '',
@@ -104,6 +111,10 @@ const NORMALIZED_SCHEMA = [
   `CREATE INDEX IF NOT EXISTS idx_app_settings_seq ON app_settings (server_seq)`,
   `CREATE INDEX IF NOT EXISTS idx_cash_desks_name ON cash_desks (name)`,
   `CREATE INDEX IF NOT EXISTS idx_cash_desks_seq ON cash_desks (server_seq)`,
+  `CREATE INDEX IF NOT EXISTS idx_cash_transfers_month ON cash_transfers (month_key)`,
+  `CREATE INDEX IF NOT EXISTS idx_cash_transfers_from ON cash_transfers (from_desk_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_cash_transfers_to ON cash_transfers (to_desk_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_cash_transfers_seq ON cash_transfers (server_seq)`,
   `CREATE INDEX IF NOT EXISTS idx_employees_name ON employees (display_name)`,
   `CREATE INDEX IF NOT EXISTS idx_employees_number ON employees (employee_number)`,
   `CREATE INDEX IF NOT EXISTS idx_employees_seq ON employees (server_seq)`,
@@ -166,19 +177,25 @@ async function reconcileSchema(pool) {
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_records_seq ON records (server_seq)`).catch(() => {})
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_audit_seq ON audit (server_seq)`).catch(() => {})
   for (const sql of NORMALIZED_SCHEMA) await pool.query(sql)
+  await pool.query('ALTER TABLE cash_desks ADD COLUMN IF NOT EXISTS is_group BOOLEAN NOT NULL DEFAULT FALSE').catch(() => {})
+  await pool.query('ALTER TABLE cash_desks ADD COLUMN IF NOT EXISTS parent_id TEXT').catch(() => {})
 }
 
 const parseJson = (v) => (typeof v === 'string' ? JSON.parse(v) : v)
 const isoStr = (v) => (v instanceof Date ? v.toISOString() : v)
 const truthy = (v) => v === true || v === 1 || v === '1' || v === 't' || v === 'true'
-const SUPPORTED = new Set(['docs', 'potrdila', 'employees', 'desks', 'settings', 'closes'])
-const topTable = { docs: 'cash_documents', potrdila: 'activity_certificates', employees: 'employees', desks: 'cash_desks', settings: 'app_settings', closes: 'month_closes' }
+const SUPPORTED = new Set(['docs', 'potrdila', 'employees', 'desks', 'transfers', 'settings', 'closes'])
+const topTable = { docs: 'cash_documents', potrdila: 'activity_certificates', employees: 'employees', desks: 'cash_desks', transfers: 'cash_transfers', settings: 'app_settings', closes: 'month_closes' }
 const emptyCompany = () => ({ name: '', street: '', postalCode: '', city: '', country: '', phone: '', fax: '', email: '', declarantName: '', declarantPosition: '' })
 
 async function readBy(q, tbl, id) {
   if (tbl === 'desks') {
     const r = (await q('SELECT * FROM cash_desks WHERE id=$1', [id]))[0]; if (!r) return null
-    return { json: { id: r.id, name: r.name, code: r.code, description: r.description, active: truthy(r.active), openingBalance: Number(r.opening_balance ?? 0), updatedAt: isoStr(r.updated_at) }, updatedAt: isoStr(r.updated_at), deleted: truthy(r.deleted) }
+    return { json: { id: r.id, name: r.name, code: r.code, description: r.description, active: truthy(r.active), isGroup: truthy(r.is_group), parentId: r.parent_id ?? null, openingBalance: Number(r.opening_balance ?? 0), updatedAt: isoStr(r.updated_at) }, updatedAt: isoStr(r.updated_at), deleted: truthy(r.deleted) }
+  }
+  if (tbl === 'transfers') {
+    const r = (await q('SELECT * FROM cash_transfers WHERE id=$1', [id]))[0]; if (!r) return null
+    return { json: { id:r.id, fromDeskId:r.from_desk_id, toDeskId:r.to_desk_id, transactionDate:r.transaction_date, transactionTime:r.transaction_time, monthKey:r.month_key, amount:Number(r.amount ?? 0), notes:r.notes, syncStatus:r.sync_status, createdAt:isoStr(r.created_at), createdBy:r.created_by, updatedAt:isoStr(r.updated_at), updatedBy:r.updated_by }, updatedAt:isoStr(r.updated_at), deleted:truthy(r.deleted) }
   }
   if (tbl === 'employees') {
     const r = (await q('SELECT * FROM employees WHERE id=$1', [id]))[0]; if (!r) return null
@@ -213,8 +230,12 @@ async function readBy(q, tbl, id) {
 
 async function writeAtSeq(q,tbl,id,obj,updatedAt,deleted,seq){
   if(tbl==='desks'){
-    await q(`INSERT INTO cash_desks(id,name,code,description,active,opening_balance,updated_at,deleted,server_seq) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)
-      ON CONFLICT(id) DO UPDATE SET name=EXCLUDED.name,code=EXCLUDED.code,description=EXCLUDED.description,active=EXCLUDED.active,opening_balance=EXCLUDED.opening_balance,updated_at=EXCLUDED.updated_at,deleted=EXCLUDED.deleted,server_seq=EXCLUDED.server_seq`,[id,obj.name??'',obj.code??'',obj.description??'',obj.active!==false,Number(obj.openingBalance??0),updatedAt,!!deleted,seq]); return
+    await q(`INSERT INTO cash_desks(id,name,code,description,active,is_group,parent_id,opening_balance,updated_at,deleted,server_seq) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+      ON CONFLICT(id) DO UPDATE SET name=EXCLUDED.name,code=EXCLUDED.code,description=EXCLUDED.description,active=EXCLUDED.active,is_group=EXCLUDED.is_group,parent_id=EXCLUDED.parent_id,opening_balance=EXCLUDED.opening_balance,updated_at=EXCLUDED.updated_at,deleted=EXCLUDED.deleted,server_seq=EXCLUDED.server_seq`,[id,obj.name??'',obj.code??'',obj.description??'',obj.active!==false,!!obj.isGroup,obj.parentId??null,Number(obj.openingBalance??0),updatedAt,!!deleted,seq]); return
+  }
+  if(tbl==='transfers'){
+    await q(`INSERT INTO cash_transfers(id,from_desk_id,to_desk_id,transaction_date,transaction_time,month_key,amount,notes,sync_status,created_at,created_by,updated_at,updated_by,deleted,server_seq) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+      ON CONFLICT(id) DO UPDATE SET from_desk_id=EXCLUDED.from_desk_id,to_desk_id=EXCLUDED.to_desk_id,transaction_date=EXCLUDED.transaction_date,transaction_time=EXCLUDED.transaction_time,month_key=EXCLUDED.month_key,amount=EXCLUDED.amount,notes=EXCLUDED.notes,sync_status=EXCLUDED.sync_status,created_at=EXCLUDED.created_at,created_by=EXCLUDED.created_by,updated_at=EXCLUDED.updated_at,updated_by=EXCLUDED.updated_by,deleted=EXCLUDED.deleted,server_seq=EXCLUDED.server_seq`,[id,obj.fromDeskId??'',obj.toDeskId??'',obj.transactionDate??'',obj.transactionTime??'',obj.monthKey??'',Number(obj.amount??0),obj.notes??'',obj.syncStatus??'SINHRONIZIRANO',obj.createdAt??'',obj.createdBy??'',updatedAt,obj.updatedBy??'',!!deleted,seq]); return
   }
   if(tbl==='employees'){
     await q(`INSERT INTO employees(id,first_name,last_name,display_name,date_of_birth,id_number,employment_start,employee_number,phone,vehicle,notes,active,created_at,updated_at,deleted,server_seq) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
@@ -291,9 +312,10 @@ export async function createPgStore(pool) {
           UNION ALL SELECT 'employees',id,deleted,server_seq FROM employees WHERE server_seq>$1
           UNION ALL SELECT 'desks',id,deleted,server_seq FROM cash_desks WHERE server_seq>$1
           UNION ALL SELECT 'settings',id,deleted,server_seq FROM app_settings WHERE server_seq>$1
+          UNION ALL SELECT 'transfers',id,deleted,server_seq FROM cash_transfers WHERE server_seq>$1
           UNION ALL SELECT 'closes',id,deleted,server_seq FROM month_closes WHERE server_seq>$1
         ) x ORDER BY server_seq`,[since])
-        const records=[]; for(const r of changes){const rec=truthy(r.deleted)?null:await readBy(q,r.tbl,r.id);records.push({tbl:r.tbl,id:r.id,json:JSON.stringify(rec?.json??{}),deleted:truthy(r.deleted)?1:0,server_seq:Number(r.server_seq)})}
+        const records=[]; for(const r of changes){const rec=truthy(r.deleted)?null:(SUPPORTED.has(r.tbl)?await readBy(q,r.tbl,r.id):await api.getRecord(r.tbl,r.id));records.push({tbl:r.tbl,id:r.id,json:JSON.stringify(rec?.json??{}),deleted:truthy(r.deleted)?1:0,server_seq:Number(r.server_seq)})}
         const audit=await q('SELECT id,at,"user",role,action,entity,entity_id AS "entityId",details,server_seq FROM audit WHERE server_seq>$1 ORDER BY server_seq',[since])
         return {records,audit:audit.map((a)=>({...a,at:isoStr(a.at),server_seq:Number(a.server_seq)}))}
       },

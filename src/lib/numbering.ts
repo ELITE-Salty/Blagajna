@@ -1,5 +1,5 @@
 import type { BlagajnaDB } from '../db'
-import type { CashDocument, ManifestRow, MonthClose, Settings } from '../types'
+import type { CashDocument, CashTransfer, ManifestRow, MonthClose, Settings } from '../types'
 import { nowIso, txAt, uuid } from './util'
 
 // ---------- Validacija dokumenta ----------
@@ -62,7 +62,7 @@ export interface ClosePreview {
   bp: PreviewRow[]
   bi: PreviewRow[]
   issues: { doc: CashDocument; problems: string[] }[]
-  unsynced: CashDocument[]
+  unsynced: (CashDocument | CashTransfer)[]
   alreadyClosed: MonthClose | null
   lastBp: number
   lastBi: number
@@ -78,7 +78,13 @@ export async function computePreview(
   const issues = docs
     .map((doc) => ({ doc, problems: docProblems(doc, s.requirePurpose) }))
     .filter((x) => x.problems.length > 0)
-  const unsynced = docs.filter((d) => d.syncStatus === 'LOKALNO')
+  const transferScope = (await db.transfers.where('monthKey').equals(monthKey).toArray()).filter((t) =>
+    s.numberingScope === 'COMPANY' || t.fromDeskId === deskId || t.toDeskId === deskId,
+  )
+  const unsynced = [
+    ...docs.filter((d) => d.syncStatus === 'LOKALNO'),
+    ...transferScope.filter((t) => t.syncStatus === 'LOKALNO'),
+  ]
   const valid = docs.filter((d) => docProblems(d, s.requirePurpose).length === 0)
   const { bp: lastBp, bi: lastBi } = await lastNumbers(db, s, deskId, year)
   const bpDocs = valid.filter((d) => d.type === 'BP').sort(sortChrono)
@@ -105,7 +111,7 @@ export async function closeMonth(
   const month = parseInt(monthKey.slice(5, 7), 10)
   const closeId = closeIdFor(s, deskId, monthKey)
 
-  return db.transaction('rw', [db.docs, db.closes, db.audit], async () => {
+  return db.transaction('rw', [db.docs, db.transfers, db.closes, db.audit], async () => {
     const existing = await db.closes.get(closeId)
     if (existing) return existing // idempotentno — druga zahteva vrne isti rezultat
 
@@ -114,7 +120,13 @@ export async function closeMonth(
     if (withProblems.length > 0) {
       throw new Error(`Meseca ni mogoče zaključiti: ${withProblems.length} dokumentov ima napake.`)
     }
-    const unsynced = docs.filter((d) => d.syncStatus === 'LOKALNO')
+    const transferScope = (await db.transfers.where('monthKey').equals(monthKey).toArray()).filter((t) =>
+      s.numberingScope === 'COMPANY' || t.fromDeskId === deskId || t.toDeskId === deskId,
+    )
+    const unsynced = [
+      ...docs.filter((d) => d.syncStatus === 'LOKALNO'),
+      ...transferScope.filter((t) => t.syncStatus === 'LOKALNO'),
+    ]
     if (unsynced.length > 0) {
       throw new Error('Meseca ni mogoče varno zaključiti, ker obstajajo nesinhronizirani zapisi.')
     }

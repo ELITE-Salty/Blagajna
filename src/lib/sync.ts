@@ -57,6 +57,7 @@ async function demoSync() {
   await new Promise((r) => setTimeout(r, 700))
   await db.docs.where('syncStatus').equals('LOKALNO').modify({ syncStatus: 'SINHRONIZIRANO' })
   await db.potrdila.filter((x) => x.syncStatus === 'LOKALNO').modify({ syncStatus: 'SINHRONIZIRANO' })
+  await db.transfers.where('syncStatus').equals('LOKALNO').modify({ syncStatus: 'SINHRONIZIRANO' })
   await db.outbox.filter((r) => r.tbl !== 'audit').delete()
   set({ syncing: false, lastSync: nowIso(), pending: await countPending() })
 }
@@ -69,7 +70,7 @@ async function serverSync(force = false) {
     const docs = await db.docs.where('syncStatus').equals('LOKALNO').toArray()
     const pots = await db.potrdila.filter((x) => x.syncStatus === 'LOKALNO').toArray()
     const ob = await db.outbox.toArray()
-    const pick = async (tbl: 'employees' | 'desks' | 'settings') => {
+    const pick = async (tbl: 'employees' | 'desks' | 'settings' | 'transfers') => {
       const ids = [...new Set(ob.filter((r) => r.tbl === tbl && !r.del).map((r) => r.id))]
       const rows = await Promise.all(ids.map((id) => (db as any)[tbl].get(id)))
       return rows.filter(Boolean).map((r: any) => (tbl === 'settings' ? stripLocalOnly(r) : r))
@@ -86,16 +87,18 @@ async function serverSync(force = false) {
       employees: await pick('employees'),
       desks: await pick('desks'),
       settings: await pick('settings'),
+      transfers: await pick('transfers'),
       deletes,
       audit: auditRows,
     }
-    const hasWork = docs.length || pots.length || payload.employees.length || payload.desks.length || payload.settings.length || Object.keys(deletes).length || auditRows.length
+    const hasWork = docs.length || pots.length || payload.employees.length || payload.desks.length || payload.settings.length || payload.transfers.length || Object.keys(deletes).length || auditRows.length
     if (hasWork) {
       const res = await apiPush(payload)
       // sprejeto → označi sinhronizirano
       if (res.accepted) {
         if (res.accepted.docs?.length) await db.docs.where('id').anyOf(res.accepted.docs).modify({ syncStatus: 'SINHRONIZIRANO' })
         if (res.accepted.potrdila?.length) await db.potrdila.where('id').anyOf(res.accepted.potrdila).modify({ syncStatus: 'SINHRONIZIRANO' })
+        if (res.accepted.transfers?.length) await db.transfers.where('id').anyOf(res.accepted.transfers).modify({ syncStatus: 'SINHRONIZIRANO' })
       }
       await db.outbox.bulkDelete(ob.map((r) => r.k!))
       // konflikti → strežnik zmaga; lokalno zabeleži revizijski dogodek
@@ -105,6 +108,7 @@ async function serverSync(force = false) {
           else if (c.tbl === 'potrdila') await db.potrdila.put(c.server)
           else if (c.tbl === 'employees') await db.employees.put(c.server)
           else if (c.tbl === 'desks') await db.desks.put(c.server)
+          else if (c.tbl === 'transfers') await db.transfers.put(c.server)
           else if (c.tbl === 'settings') await mergeSettings(c.server)
         }
         await db.audit.put({
@@ -140,6 +144,7 @@ async function serverSync(force = false) {
       await apply('potrdila', pulled.potrdila)
       await apply('employees', pulled.employees)
       await apply('desks', pulled.desks)
+      await apply('transfers', pulled.transfers)
       await apply('settings', pulled.settings)
       for (const c of pulled.closes || []) await db.closes.put(c)
       if (pulled.audit?.length) await db.audit.bulkPut(pulled.audit.map((a: any) => ({ id: a.id, at: a.at, user: a.user, role: a.role, action: a.action, entity: a.entity, entityId: a.entityId, details: a.details || '' })))

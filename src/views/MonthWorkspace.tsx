@@ -2,17 +2,20 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { useApp, useSyncState } from '../state'
 import { EmployeeEdit } from './Employees'
-import type { CashDocument, DocType } from '../types'
+import type { CashDesk, CashDocument, CashTransfer, DocType } from '../types'
 import { PREJEL_LABELS } from '../types'
 import { cx, docNo, fmtDate, fmtDateTime, fmtEur, monthLabel, nDokumentovIma, nowIso, nowTime, parseAmount, todayIso, currentMonthKey, uuid } from '../lib/util'
 import { closeIdFor, docProblems, sortChrono } from '../lib/numbering'
-import { balanceInfo, checkBiCover } from '../lib/balance'
+import { availableInDesk, balanceInfo, checkBiCover } from '../lib/balance'
 import { can } from '../lib/perms'
 import { Btn, Chip, Warn, inputCls } from '../components/ui'
 import { emptyDoc } from '../db'
-import { deleteDocument } from '../lib/persist'
+import { deleteDocument, deleteTransfer } from '../lib/persist'
 import { CloseWizard, ManifestView } from './CloseWizard'
 import type { PrintJob } from '../print'
+import { childDesks, locationIdsForView, physicalDesks } from '../lib/desks'
+import { PayoutImportModal } from './PayoutImport'
+import { InternalTransferModal } from './InternalTransfer'
 
 export function MonthWorkspace({
   onOpenDoc, onPrint,
@@ -29,6 +32,8 @@ export function MonthWorkspace({
   const [wizard, setWizard] = useState<null | 'preview' | 'close'>(null)
   const [showManifest, setShowManifest] = useState(false)
   const [newEmpForDoc, setNewEmpForDoc] = useState<string | null>(null)
+  const [showPayoutImport, setShowPayoutImport] = useState(false)
+  const [showTransfer, setShowTransfer] = useState(false)
   const sync = useSyncState()
 
   const ALL_DESKS = '__all__'
@@ -41,8 +46,36 @@ export function MonthWorkspace({
   const desks = useLiveQuery(() => db.desks.toArray(), []) ?? []
   const employees = useLiveQuery(() => db.employees.toArray(), []) ?? []
   const docsAll = useLiveQuery(() => db.docs.where('monthKey').equals(month).toArray(), [month]) ?? []
+  const transfersAll = useLiveQuery(() => db.transfers.where('monthKey').equals(month).toArray(), [month]) ?? []
   const monthCloses = useLiveQuery(() => db.closes.where('monthKey').equals(month).toArray(), [month]) ?? []
   const isAllDesks = viewDeskId === ALL_DESKS
+  const viewDesk = desks.find((d) => d.id === viewDeskId)
+  const isGroupView = !!viewDesk?.isGroup
+  const parentDesk = viewDesk?.parentId ? desks.find((d) => d.id === viewDesk.parentId) : undefined
+  const groupChildren = isGroupView && viewDesk ? childDesks(desks, viewDesk.id).filter((d) => !d.isGroup) : []
+  const siblingLocations = parentDesk ? childDesks(desks, parentDesk.id).filter((d) => !d.isGroup) : []
+  const transferGroups = useMemo(() => {
+    const groups = new Map<string, CashDesk[]>()
+    for (const d of desks.filter((x) => !x.isGroup && x.active && !!x.parentId)) {
+      const rows = groups.get(d.parentId!) ?? []
+      rows.push(d)
+      groups.set(d.parentId!, rows)
+    }
+    return groups
+  }, [desks])
+  const canInternalTransfer = [...transferGroups.values()].some((rows) => rows.length >= 2)
+  const canTransferFromCurrentGroup = isGroupView
+    ? (transferGroups.get(viewDeskId)?.length ?? 0) >= 2
+    : parentDesk
+      ? (transferGroups.get(parentDesk.id)?.length ?? 0) >= 2
+      : false
+  const viewLocationIds = isAllDesks ? physicalDesks(desks).map((d) => d.id) : locationIdsForView(desks, viewDeskId)
+  const viewLocationSet = new Set(viewLocationIds)
+  const transfers = useMemo(() => transfersAll
+    .filter((t) => viewLocationSet.has(t.fromDeskId) || viewLocationSet.has(t.toDeskId))
+    .sort((a, b) => `${a.transactionDate}T${a.transactionTime}`.localeCompare(`${b.transactionDate}T${b.transactionTime}`) || a.createdAt.localeCompare(b.createdAt)),
+    [transfersAll, viewDeskId, desks],
+  )
 
   // If a remembered desk was removed, fall back to the current active desk (or All).
   useEffect(() => {
@@ -52,10 +85,10 @@ export function MonthWorkspace({
     try { localStorage.setItem(VIEW_DESK_KEY, fallback) } catch { /* storage can be blocked */ }
   }, [desks, isAllDesks, settings.activeDeskId, viewDeskId])
 
-  const actionDeskId = isAllDesks
-    ? (desks.some((d) => d.id === settings.activeDeskId) ? settings.activeDeskId : desks[0]?.id ?? '')
-    : viewDeskId
-  const close = !isAllDesks
+  const physical = physicalDesks(desks)
+  const actionCandidates = isAllDesks ? physical : isGroupView ? physical.filter((d) => viewLocationSet.has(d.id)) : physical.filter((d) => d.id === viewDeskId)
+  const actionDeskId = actionCandidates.some((d) => d.id === settings.activeDeskId) ? settings.activeDeskId : actionCandidates[0]?.id ?? ''
+  const close = !isAllDesks && !isGroupView
     ? monthCloses.find((c) => c.id === closeIdFor(settings, viewDeskId, month)) ?? null
     : null
   const isClosed = !!close
@@ -64,7 +97,7 @@ export function MonthWorkspace({
 
   const docs = useMemo(() => {
     return docsAll
-      .filter((d) => isAllDesks || d.deskId === viewDeskId)
+      .filter((d) => viewLocationSet.has(d.deskId))
       .filter((d) => !fltType || d.type === fltType)
       .filter((d) => !fltEmp || d.employeeId === fltEmp)
       .filter((d) => {
@@ -78,34 +111,43 @@ export function MonthWorkspace({
         )
       })
       .sort(sortChrono)
-  }, [docsAll, isAllDesks, viewDeskId, fltType, fltEmp, search])
+  }, [docsAll, viewDeskId, desks, fltType, fltEmp, search])
 
-  const deskDocs = useMemo(() => docsAll.filter((d) => isAllDesks || d.deskId === viewDeskId), [docsAll, isAllDesks, viewDeskId])
+  const deskDocs = useMemo(() => docsAll.filter((d) => viewLocationSet.has(d.deskId)), [docsAll, viewDeskId, desks])
   const incomplete = deskDocs.filter((d) => d.status === 'ODPRT' && !docIsClosed(d) && docProblems(d, settings.requirePurpose).length > 0)
-  const unsyncedHere = deskDocs.filter((d) => d.syncStatus === 'LOKALNO').length
+  const unsyncedHere = deskDocs.filter((d) => d.syncStatus === 'LOKALNO').length + transfers.filter((t) => t.syncStatus === 'LOKALNO').length
 
   // Stanje blagajne: for All desks aggregate each desk separately so opening balances remain correct.
   const selectedAllDocs = useLiveQuery(
-    () => isAllDesks ? db.docs.toArray() : db.docs.where('deskId').equals(viewDeskId).toArray(),
-    [isAllDesks, viewDeskId],
+    () => (isAllDesks || isGroupView) ? db.docs.toArray() : db.docs.where('deskId').equals(viewDeskId).toArray(),
+    [isAllDesks, isGroupView, viewDeskId],
+  ) ?? []
+  const selectedAllTransfers = useLiveQuery(
+    () => (isAllDesks || isGroupView)
+      ? db.transfers.toArray()
+      : db.transfers.filter((t) => t.fromDeskId === viewDeskId || t.toDeskId === viewDeskId).toArray(),
+    [isAllDesks, isGroupView, viewDeskId],
   ) ?? []
   const bal = useMemo(() => {
-    if (!isAllDesks) return balanceInfo(desks.find((x) => x.id === viewDeskId), selectedAllDocs, month)
-    return desks.reduce((sum, desk) => {
-      const part = balanceInfo(desk, selectedAllDocs.filter((d) => d.deskId === desk.id), month)
+    if (!isAllDesks && !isGroupView) return balanceInfo(desks.find((x) => x.id === viewDeskId), selectedAllDocs, month, selectedAllTransfers)
+    return physical.filter((desk) => isAllDesks || viewLocationSet.has(desk.id)).reduce((sum, desk) => {
+      const part = balanceInfo(desk, selectedAllDocs.filter((d) => d.deskId === desk.id), month, selectedAllTransfers.filter((t) => t.fromDeskId === desk.id || t.toDeskId === desk.id))
       return {
         opening: sum.opening + part.opening, prenos: sum.prenos + part.prenos,
         mBP: sum.mBP + part.mBP, mBI: sum.mBI + part.mBI, nBP: sum.nBP + part.nBP, nBI: sum.nBI + part.nBI,
+        mTransferIn: sum.mTransferIn + part.mTransferIn, mTransferOut: sum.mTransferOut + part.mTransferOut,
+        nTransferIn: sum.nTransferIn + part.nTransferIn, nTransferOut: sum.nTransferOut + part.nTransferOut,
         konec: sum.konec + part.konec, current: sum.current + part.current,
       }
-    }, { opening: 0, prenos: 0, mBP: 0, mBI: 0, nBP: 0, nBI: 0, konec: 0, current: 0 })
-  }, [desks, isAllDesks, month, selectedAllDocs, viewDeskId])
+    }, { opening: 0, prenos: 0, mBP: 0, mBI: 0, nBP: 0, nBI: 0, mTransferIn: 0, mTransferOut: 0, nTransferIn: 0, nTransferOut: 0, konec: 0, current: 0 })
+  }, [desks, isAllDesks, isGroupView, month, selectedAllDocs, selectedAllTransfers, viewDeskId])
 
   function selectDesk(value: string) {
     setViewDeskId(value)
     try { localStorage.setItem(VIEW_DESK_KEY, value) } catch { /* storage can be blocked */ }
     // Only a concrete desk becomes the default for creating a new document.
-    if (value !== ALL_DESKS && value !== settings.activeDeskId) void app.saveSettings({ activeDeskId: value })
+    const selected = desks.find((d) => d.id === value)
+    if (value !== ALL_DESKS && !selected?.isGroup && value !== settings.activeDeskId) void app.saveSettings({ activeDeskId: value })
     // A desk switch should immediately pull remote changes instead of waiting for the periodic sync tick.
     if (app.mode === 'server' && !sync.syncing) void app.syncNow()
   }
@@ -207,6 +249,23 @@ export function MonthWorkspace({
     await app.audit('Osnutek izbrisan', 'BlagajniskiDokument', d.id, '')
   }
 
+  const transferIsClosed = (t: CashTransfer) =>
+    monthCloses.some((c) => c.id === closeIdFor(settings, t.fromDeskId, t.monthKey) || c.id === closeIdFor(settings, t.toDeskId, t.monthKey))
+
+  async function removeTransfer(t: CashTransfer) {
+    if (transferIsClosed(t)) return
+    const from = desks.find((d) => d.id === t.fromDeskId)?.name ?? t.fromDeskId
+    const to = desks.find((d) => d.id === t.toDeskId)?.name ?? t.toDeskId
+    const targetBalance = await availableInDesk(db, t.toDeskId)
+    if (targetBalance - t.amount < -1e-9) {
+      alert(`Prenosa ni mogoče izbrisati, ker bi blagajna ${to} po izbrisu imela negativno stanje.`)
+      return
+    }
+    if (!window.confirm(`Izbrišem interni prenos ${from} → ${to} (${fmtEur(t.amount)})?`)) return
+    await deleteTransfer(db, t.id)
+    await app.audit('Interni prenos izbrisan', 'InterniPrenos', t.id, `${from} → ${to} · ${fmtEur(t.amount)}`)
+  }
+
   const keyHandler = (d: CashDocument, col: string) => (e: React.KeyboardEvent) => {
     if (e.key === 'Enter') {
       e.preventDefault()
@@ -219,7 +278,7 @@ export function MonthWorkspace({
     }
   }
 
-  const deskName = isAllDesks ? 'Vse blagajne' : desks.find((x) => x.id === viewDeskId)?.name ?? '—'
+  const deskName = isAllDesks ? 'Vse blagajne' : `${desks.find((x) => x.id === viewDeskId)?.name ?? '—'}${isGroupView ? ' · skupaj' : ''}`
   const actionDeskName = desks.find((x) => x.id === actionDeskId)?.name ?? '—'
 
   return (
@@ -232,16 +291,27 @@ export function MonthWorkspace({
           <button className="px-2.5 py-1.5 hover:bg-slate-100" onClick={() => shiftMonth(1)} title="Naslednji mesec">›</button>
         </div>
         <select
-          className={cx(inputCls, 'w-auto font-medium')}
+          className={cx(inputCls, 'w-auto min-w-[250px] font-medium')}
           value={viewDeskId}
           onChange={(e) => selectDesk(e.target.value)}
-          title="Prikaz blagajne"
+          title="Izberite globalno blagajno za skupni pogled ali interno blagajno za njen lasten pregled"
         >
-          <option value={ALL_DESKS}>💶 Vse blagajne</option>
-          {desks.map((x) => <option key={x.id} value={x.id}>💶 {x.name}</option>)}
+          <option value={ALL_DESKS}>💶 Vse blagajne podjetja</option>
+          {desks.filter((x) => x.isGroup).map((g) => (
+            <optgroup key={g.id} label={`🏦 ${g.name} — GLOBALNA`}>
+              <option value={g.id}>🏦 {g.name} — SKUPAJ</option>
+              {desks.filter((d) => d.parentId === g.id && !d.isGroup).map((d) => <option key={d.id} value={d.id}>↳ 💶 {d.name} — interna</option>)}
+            </optgroup>
+          ))}
+          {desks.filter((d) => !d.isGroup && !d.parentId).length > 0 && (
+            <optgroup label="Samostojne blagajne">
+              {desks.filter((d) => !d.isGroup && !d.parentId).map((d) => <option key={d.id} value={d.id}>💶 {d.name}</option>)}
+            </optgroup>
+          )}
         </select>
         {isAllDesks
           ? <Chip tone="blue">Vse blagajne</Chip>
+          : isGroupView ? <Chip tone="blue">Globalna blagajna · skupaj</Chip>
           : isClosed
             ? <Chip tone="green">✓ Mesec zaključen</Chip>
             : <Chip tone="amber">Mesec odprt</Chip>}
@@ -255,13 +325,43 @@ export function MonthWorkspace({
           {sync.syncing ? '⟳ Osvežujem …' : '⟳ Osveži podatke'}
           {sync.pending > 0 && <span className="rounded-full bg-violet-100 text-violet-700 px-1.5 text-[11px] font-bold">{sync.pending}</span>}
         </Btn>
-        {!isAllDesks && can(role, 'PREVIEW_NUMBERING', settings) && !isClosed && (
+        {!isAllDesks && !isGroupView && can(role, 'PREVIEW_NUMBERING', settings) && !isClosed && (
           <Btn onClick={() => setWizard('preview')}>Predogled številčenja</Btn>
         )}
-        {!isAllDesks && (isClosed
+        {!isAllDesks && !isGroupView && (isClosed
           ? <Btn onClick={() => setShowManifest(true)}>Zapisnik zaključka</Btn>
           : can(role, 'CLOSE_MONTH', settings) && <Btn kind="primary" onClick={() => setWizard('close')}>Zaključi mesec</Btn>)}
       </div>
+
+      {!isAllDesks && viewDesk && (
+        <div className="mt-3 rounded-lg border border-blu-200 bg-blu-50/70 px-3 py-2.5">
+          {isGroupView ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-[11px] font-bold uppercase tracking-wide text-blu-700">Glavna / globalna blagajna</span>
+              <span className="font-semibold text-slate-800">🏦 {viewDesk.name}</span>
+              <Chip tone="blue">SKUPAJ {fmtEur(bal.current)}</Chip>
+              <span className="text-[12px] text-slate-500">Vse spodnje blagajne se seštevajo v ta pregled:</span>
+              {groupChildren.map((d) => {
+                const info = balanceInfo(d, selectedAllDocs.filter((x) => x.deskId === d.id), month, selectedAllTransfers.filter((t) => t.fromDeskId === d.id || t.toDeskId === d.id))
+                return <button key={d.id} className="rounded-md border border-blu-200 bg-white px-2.5 py-1 text-[12px] font-medium text-blu-800 hover:bg-blu-100" onClick={() => selectDesk(d.id)}>↳ {d.name} · {fmtEur(info.current)}</button>
+              })}
+              {groupChildren.length === 0 && <span className="text-[12px] text-slate-400">Ni dodeljenih internih blagajn.</span>}
+              {/*<Btn kind="violet" onClick={() => setShowTransfer(true)} title="Prenos gotovine med internima blagajnama; brez BP/BI.">↔ Interni prenos</Btn>*/}
+            </div>
+          ) : parentDesk ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-[11px] font-bold uppercase tracking-wide text-blu-700">Hierarhija blagajne</span>
+              <button className="rounded-md border border-blu-200 bg-white px-2.5 py-1 text-[12px] font-semibold text-blu-800 hover:bg-blu-100" onClick={() => selectDesk(parentDesk.id)}>🏦 {parentDesk.name} · POGLEJ SKUPAJ</button>
+              <span className="text-slate-400">›</span>
+              <span className="rounded-md bg-white px-2.5 py-1 text-[12px] font-semibold text-slate-800 border border-slate-200">💶 {viewDesk.name} · interna</span>
+              {siblingLocations.filter((d) => d.id !== viewDesk.id).map((d) => <button key={d.id} className="rounded-md border border-slate-200 bg-white px-2.5 py-1 text-[12px] text-slate-600 hover:bg-slate-100" onClick={() => selectDesk(d.id)}>Druga lokacija: {d.name}</button>)}
+              {<Btn kind="violet" onClick={() => setShowTransfer(true)} title="Prenos gotovine iz te interne blagajne v drugo interno blagajno iste glavne blagajne; brez BP/BI.">↔ Interni prenos</Btn>}
+            </div>
+          ) : (
+            <div className="text-[12px] text-slate-600"><b>Samostojna blagajna:</b> {viewDesk.name}. V Nastavitvah jo lahko povežete z glavno/globalno blagajno.</div>
+          )}
+        </div>
+      )}
 
       {/* Stanje blagajne */}
       <div className="mt-3 grid grid-cols-2 md:grid-cols-5 gap-2">
@@ -277,6 +377,23 @@ export function MonthWorkspace({
         <StatCard label={`Izdatki · ${monthLabel(month)}`} value={`− ${fmtEur(bal.mBI)}`} tone="red" sub={`${bal.nBI} × BI`} />
         <StatCard label="Stanje ob koncu meseca" value={fmtEur(bal.konec)} tone={bal.konec < 0 ? 'red' : undefined} sub="prenos + mesečna razlika" />
       </div>
+      {(bal.nTransferIn > 0 || bal.nTransferOut > 0) && (
+        <div className="mt-2 flex flex-wrap gap-2 items-center text-[12px]">
+          <span className="text-slate-400 font-semibold uppercase tracking-wide">Interni prenosi v mesecu:</span>
+          {bal.nTransferIn > 0 && <Chip tone="green">prejeto + {fmtEur(bal.mTransferIn)} · {bal.nTransferIn} prenosov</Chip>}
+          {bal.nTransferOut > 0 && <Chip tone="red">oddano − {fmtEur(bal.mTransferOut)} · {bal.nTransferOut} prenosov</Chip>}
+          {(isAllDesks || isGroupView) && <span className="text-slate-400">Prenosi znotraj iste glavne blagajne se v skupnem stanju med seboj izničijo.</span>}
+        </div>
+      )}
+      {isGroupView && (
+        <div className="mt-2 flex flex-wrap gap-2 items-center text-[12px]">
+          <span className="text-slate-400 font-semibold uppercase tracking-wide">Po lokacijah:</span>
+          {physical.filter((d) => viewLocationSet.has(d.id)).map((d) => {
+            const info = balanceInfo(d, selectedAllDocs.filter((x) => x.deskId === d.id), month, selectedAllTransfers.filter((t) => t.fromDeskId === d.id || t.toDeskId === d.id))
+            return <Chip key={d.id} tone={info.current < 0 ? 'red' : 'blue'}>{d.name}: {fmtEur(info.current)}</Chip>
+          })}
+        </div>
+      )}
 
       {/* Statistika */}
       <div className="flex flex-wrap gap-2 mt-2 text-sm items-center">
@@ -284,7 +401,7 @@ export function MonthWorkspace({
         {unsyncedHere > 0 && <Chip tone="violet">nesinhronizirano: {unsyncedHere}</Chip>}
         <span className="text-slate-400 text-[12px]">
           {monthLabel(month)} · {deskName}
-          {isAllDesks ? ` · novi dokumenti: ${actionDeskName}` : (settings.numberingScope === 'COMPANY' ? ' · skupno številčenje podjetja' : ' · številčenje po blagajni')}
+          {(isAllDesks || isGroupView) ? ` · novi dokumenti: ${actionDeskName}` : (settings.numberingScope === 'COMPANY' ? ' · skupno številčenje podjetja' : ' · številčenje po blagajni')}
           {' · izdatek ne more preseči stanja blagajne'}
         </span>
       </div>
@@ -298,7 +415,7 @@ export function MonthWorkspace({
         <div className="mt-3">
           <Warn>
             {nDokumentovIma(incomplete.length)} manjkajoče podatke ({incomplete.slice(0, 3).map((d) => d.employeeName || d.type).join(', ')}{incomplete.length > 3 ? ', …' : ''}).
-            {isAllDesks ? 'V posamezni blagajni je treba napake popraviti pred zaključkom meseca.' : 'Zaključek meseca do popravka ni mogoč — vnos lahko nadaljujete.'}
+            {(isAllDesks || isGroupView) ? 'V posamezni interni blagajni je treba napake popraviti pred zaključkom meseca.' : 'Zaključek meseca do popravka ni mogoč — vnos lahko nadaljujete.'}
           </Warn>
         </div>
       )}
@@ -317,9 +434,13 @@ export function MonthWorkspace({
         <input className={cx(inputCls, 'w-56')} placeholder="Išči (namen, zaposleni, znesek, št.)" value={search} onChange={(e) => setSearch(e.target.value)} />
         <div className="flex-1" />
         {!actionIsClosed && actionDeskId && (
+          <Btn onClick={() => setShowPayoutImport(true)} title="Ločen uvoz akontacij; uvoz zaposlenih ostaja v zavihku Zaposleni.">⇧ Uvoz akontacij (Excel/CSV)</Btn>
+        )}
+        {/*<Btn kind="violet" onClick={() => setShowTransfer(true)} title="Interni prenos gotovine med blagajnami; brez BP/BI. Gumb je vedno viden na zaslonu Blagajna.">↔ Interni prenos</Btn>*/}
+        {!actionIsClosed && actionDeskId && (
           <>
-            <Btn kind="success" onClick={() => newDoc('BP')} title={isAllDesks ? `Nov dokument bo dodan v: ${actionDeskName}` : undefined}>+ Prejemek (BP)</Btn>
-            <Btn kind="danger" onClick={() => newDoc('BI')} title={isAllDesks ? `Nov dokument bo dodan v: ${actionDeskName}` : undefined}>+ Izdatek (BI)</Btn>
+            <Btn kind="success" onClick={() => newDoc('BP')} title={(isAllDesks || isGroupView) ? `Nov dokument bo dodan v: ${actionDeskName}` : undefined}>+ Prejemek (BP)</Btn>
+            <Btn kind="danger" onClick={() => newDoc('BI')} title={(isAllDesks || isGroupView) ? `Nov dokument bo dodan v: ${actionDeskName}` : undefined}>+ Izdatek (BI)</Btn>
           </>
         )}
       </div>
@@ -463,11 +584,58 @@ export function MonthWorkspace({
         </table>
       </div>
 
+      <div className="mt-4">
+        <div className="flex flex-wrap items-center gap-2 mb-1.5">
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">↔ Interni prenosi gotovine</div>
+          <Chip>{transfers.length} prenosov</Chip>
+          <span className="text-[11px] text-slate-400">Ločeno od BP/BI; prikazano v izvorni in ciljni blagajni.</span>
+        </div>
+        <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
+          <table className="w-full text-sm min-w-[780px]">
+            <thead className="bg-slate-50 text-[11px] uppercase tracking-wide text-slate-500 text-left">
+              <tr>
+                <th className="px-2 py-2 w-28">Datum</th>
+                <th className="px-2 py-2 w-20">Čas</th>
+                <th className="px-2 py-2">Iz blagajne</th>
+                <th className="px-2 py-2">V blagajno</th>
+                <th className="px-2 py-2 w-28 text-right">Znesek</th>
+                <th className="px-2 py-2">Opomba</th>
+                <th className="px-2 py-2 w-28 text-right">Stanje</th>
+              </tr>
+            </thead>
+            <tbody>
+              {transfers.length === 0 && <tr><td colSpan={7} className="px-3 py-5 text-center text-slate-400">V tem mesecu ni internih prenosov za izbrani pogled.</td></tr>}
+              {transfers.map((t) => {
+                const from = desks.find((d) => d.id === t.fromDeskId)?.name ?? t.fromDeskId
+                const to = desks.find((d) => d.id === t.toDeskId)?.name ?? t.toDeskId
+                const closedTransfer = transferIsClosed(t)
+                return (
+                  <tr key={t.id} className="border-t border-slate-100">
+                    <td className="px-2 py-1.5 font-mono text-[12px]">{fmtDate(t.transactionDate)}</td>
+                    <td className="px-2 py-1.5 font-mono text-[12px]">{t.transactionTime}</td>
+                    <td className="px-2 py-1.5"><span className="font-medium text-red-700">{from}</span></td>
+                    <td className="px-2 py-1.5"><span className="font-medium text-emerald-700">{to}</span></td>
+                    <td className="px-2 py-1.5 text-right font-mono font-semibold">{fmtEur(t.amount)}</td>
+                    <td className="px-2 py-1.5 text-slate-600">{t.notes || '—'}</td>
+                    <td className="px-2 py-1.5 text-right whitespace-nowrap">
+                      {closedTransfer ? <Chip tone="green">zaklenjen</Chip> : t.syncStatus === 'LOKALNO' ? <Chip tone="violet">lokalno</Chip> : <Chip tone="blue">prenos</Chip>}
+                      {!closedTransfer && <button className="ml-2 text-slate-400 hover:text-red-600 text-[13px]" title="Izbriši interni prenos" onClick={() => removeTransfer(t)}>🗑</button>}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
       <div className="mt-2 text-[11px] text-slate-400">
         Status dokumenta: <b>osnutek</b> ostane do akcije <b>»Zaključi mesec«</b>. Takrat dobi uradno številko in status <b>zaključen</b>. · Hitri vnos: <b>Enter</b> = naslednja vrstica · <b>Ctrl+D</b> = kopiraj prejšnjo vrstico · ⎘ = podvoji.
       </div>
 
-      {wizard && !isAllDesks && (
+      {showTransfer && <InternalTransferModal initialMonth={month} initialDeskId={!isAllDesks && !isGroupView ? viewDeskId : actionDeskId} onClose={() => setShowTransfer(false)} onDone={() => setShowTransfer(false)} />}
+      {showPayoutImport && <PayoutImportModal initialMonth={month} initialDeskId={actionDeskId} onClose={() => setShowPayoutImport(false)} onDone={() => setShowPayoutImport(false)} />}
+      {wizard && !isAllDesks && !isGroupView && (
         <CloseWizard
           deskId={viewDeskId}
           monthKey={month}

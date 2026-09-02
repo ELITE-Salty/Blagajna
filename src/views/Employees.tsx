@@ -74,8 +74,8 @@ export function EmployeesView({
         <div className="flex flex-wrap gap-2 items-center">
           <input className={cx(inputCls, 'min-w-[160px] flex-1')} placeholder="Išči zaposlenega …" value={search} onChange={(e) => setSearch(e.target.value)} />
           {manage && (
-            <label className="inline-flex shrink-0 cursor-pointer items-center rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50" title="Uvozi seznam zaposlenih iz CSV izvoza kadrovske baze">
-              ⇧ Uvozi CSV
+            <label className="inline-flex shrink-0 cursor-pointer items-center rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50" title="Ločen uvoz zaposlenih iz CSV. Ta funkcija ne ustvarja akontacij ali blagajniških dokumentov.">
+              ⇧ Uvoz zaposlenih CSV
               <input type="file" accept=".csv,text/csv,text/plain" className="hidden" onChange={(e) => { void importEmployees(e.target.files?.[0] ?? null); e.currentTarget.value = '' }} />
             </label>
           )}

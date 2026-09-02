@@ -16,6 +16,33 @@ Spletna aplikacija za **blagajniške prejemke (BP)**, **blagajniške izdatke (BI
 - Neusklajenost časa transakcije z obdobjem potrdila prikaže **opozorilo** (nikoli ne blokira).
 - Tisk posnema obstoječe papirne obrazce (BP zelen, BI oranžen, potrdilo = AETR obrazec).
 
+
+## Glavna/globalna blagajna in ločen uvoz akontacij
+
+- **Glavna/globalna blagajna** je zbirnik več internih lokacij (npr. `Glavna blagajna (GB)` → `Pisarna`, `Direktor`).
+  Dokumenti se vedno knjižijo na konkretno interno lokacijo, globalni pogled pa prikazuje skupno stanje in stanje po lokacijah.
+- V **Nastavitve → Struktura blagajn** je hierarhija prikazana kot drevo: glavna blagajna zgoraj, interne blagajne pod njo.
+- V glavnem zavihku **Blagajna** izbirnik prikazuje isto hierarhijo. Izberite `🏦 Glavna blagajna — SKUPAJ` za skupni pregled ali `↳ Pisarna` / `↳ Direktor` za posamezno interno blagajno.
+- **Uvoz zaposlenih CSV ostaja ločen** v zavihku **Zaposleni → Uvoz zaposlenih CSV** in samo dodaja/posodablja zaposlene.
+- V mesečnem pogledu Blagajne je ločen **Uvoz akontacij (Excel/CSV)**. Ta uvoz ne spreminja zaposlenih; obstoječe zaposlene samo poišče po imenu in priimku ter ustvari BI dokumente. Podprta sta `.xlsx` (prvi delovni list) in CSV.
+  Pričakovani stolpci so `Ime`, `Priimek`, `Znesek`/`Vrednost` (ali en stolpec `Ime in priimek`).
+- Izvorni znesek **do vključno 700 €** ostane en BI. Če je znesek **nad 700 €**, se razdeli na več BI postavk med **300 € in 500 €**.
+  Vmesni deli so praviloma v korakih po 5 €, zadnji del pa po potrebi prevzame natančen ostanek do centa, zato je **vsota vseh delov vedno natančno enaka izvornemu znesku** in se uvoženi skupni znesek ne zaokrožuje.
+- Datumi se določajo v oknu **od 20. izbranega meseca do 16. naslednjega meseca**. Za razdeljene akontacije se posamezni BI razporedijo na **več različnih dni in različnih ur**. Začetni/končni datumi povezanih potrdil o dejavnostih (»dopust listov«) imajo prednost, preostali deli pa se razpršijo po veljavnem oknu.
+- Pred shranjevanjem se pokaže predogled vseh ustvarjenih BI dokumentov. Uvoz je blokiran pri neujemajočih zaposlenih, zaključenih mesecih
+  ali če na izbrani interni blagajni ni dovolj sredstev. Vzorec: `akontacije-import-vzorec.csv` (zaradi združljivosti je ohranjen tudi prejšnji `izplacila-import-vzorec.csv`).
+
+
+### Interni prenosi med blagajnami
+
+- V zavihku **Blagajna** je ločena akcija **↔ Interni prenos** za premik gotovine med dvema aktivnima internima blagajnama iste glavne/globalne blagajne.
+- Interni prenos **ni BP ali BI**, zato ne dobi BP/BI številke in ne porablja zaporedja številčenja.
+- Znesek se na izvorni blagajni odšteje, na ciljni blagajni pa prišteje. Pri prenosu med dvema otrokoma iste globalne blagajne se skupni saldo globalne blagajne ne spremeni.
+- Vsak prenos ima datum, čas, izvorno blagajno, ciljno blagajno, znesek in neobvezno opombo ter je viden v evidenci pri obeh blagajnah.
+- Prenos ni dovoljen, če izvorna blagajna nima dovolj gotovine ali če je mesec izvorne oziroma ciljne blagajne že zaključen.
+- **Poročila** imajo ločeno tabelo in CSV izvoz internih prenosov. V **Blagajniški knjigi** so prenosi vključeni v saldo kot vrstice `PRENOS`, ne kot BP/BI.
+- Neusklajeni prenosi blokirajo zaključek meseca enako kot drugi neusklajeni poslovni podatki; po zaključku meseca so zaklenjeni.
+
 ## Zagon (razvoj)
 
 ```bash
@@ -44,7 +71,7 @@ Admin/Računovodja/Finance, sinhronizacijski API (push/pull s konflikti in tombs
 ### Normalizirana strežniška baza (schema v3)
 
 Poslovni podatki niso več shranjeni kot en JSON zapis. Glavne tabele so:
-`company`, `app_settings`, `cash_desks`, `employees`, `cash_documents`,
+`company`, `app_settings`, `cash_desks`, `cash_transfers`, `employees`, `cash_documents`,
 `cash_document_rows`, `cash_document_attachments`, `cash_document_signatures`,
 `activity_certificates`, `activity_certificate_signatures`, `month_closes`,
 `month_close_manifest`, `users` in `audit`. Na iskalnih poljih (mesec, blagajna, datum,
