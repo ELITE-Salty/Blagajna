@@ -118,3 +118,9 @@ src/
   print.tsx           # papirni izpisi: BP, BI, potrdilo o dejavnostih (AETR)
   views/              # blagajna (hitra mreža), potrdila, zaposleni, nastavitve, revizija
 ```
+
+## Excel izvoz in predloge za zaposlene
+
+- **Poročila in izvoz** zdaj ustvarijo pravi `.xlsx` dokument z listoma **Povzetek** in **Podrobnosti**, Excel filtri, zamrznjeno glavo, oblikovanimi statusi/tipi ter pravimi številčnimi EUR celicami.
+- V **Zaposleni** sta na voljo gumba **Excel predloga** in **CSV predloga**. Excel predloga vsebuje navodila, oblikovane datumske stolpce in izbiro `Da/Ne` za aktivnost.
+- Uvoz zaposlenih sprejme CSV/TSV z ločilom `;`, `,` ali tabulatorjem. Datumi so lahko zapisani kot `yyyy-mm-dd` ali `dd.mm.yyyy`.
