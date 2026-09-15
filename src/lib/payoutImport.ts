@@ -250,12 +250,56 @@ export function payoutWindow(monthKey: string): { start: string; end: string; da
   return { start: iso(start), end: iso(end), days }
 }
 
+// Employee names in the payout export are not always clean: first/last name can be
+// reversed, cells can contain duplicate words or trailing spaces, and some exports add
+// suffixes such as "ml." or notes such as "NIMA PREB. V SLO". Build a canonical
+// token key so those harmless differences do not prevent an otherwise exact match.
+function personNameTokens(...values: unknown[]): string[] {
+  let value = values
+    .map((v) => String(v ?? ''))
+    .join(' ')
+    .toLowerCase()
+    // Characters such as đ/Đ do not reliably decompose with Unicode NFD/NFKD.
+    .replace(/[đð]/g, 'd')
+    .replace(/ł/g, 'l')
+    .replace(/ø/g, 'o')
+    .replace(/æ/g, 'ae')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  // Known non-name text that appears in the payout source.
+  value = value
+    .replace(/\bnima preb v slo\b/g, ' ')
+    .replace(/\bml\b/g, ' ')
+    .replace(/\bjr\b/g, ' ')
+    .replace(/\bjunior\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  // A repeated token should not matter, e.g. "ČAPELJA Mario" + "MARIO".
+  return [...new Set(value.split(' ').filter(Boolean))].sort()
+}
+
+function personNameKey(...values: unknown[]): string {
+  return personNameTokens(...values).join('|')
+}
+
 function matchEmployee(row: PayoutSourceRow, employees: Employee[]): Employee | null {
-  const exact = norm(row.displayName)
-  const byDisplay = employees.filter((e) => norm(e.displayName) === exact)
-  if (byDisplay.length === 1) return byDisplay[0]
-  const byParts = employees.filter((e) => norm(e.firstName) === norm(row.firstName) && norm(e.lastName) === norm(row.lastName))
-  return byParts.length === 1 ? byParts[0] : null
+  // Include all source name fields. Duplicate tokens are removed, and sorting makes
+  // "IME PRIIMEK" and "PRIIMEK IME" equivalent.
+  const rowKey = personNameKey(row.firstName, row.lastName, row.displayName)
+  if (!rowKey) return null
+
+  const matches = employees.filter((e) => {
+    const employeeKey = personNameKey(e.firstName, e.lastName, e.displayName)
+    return employeeKey === rowKey
+  })
+
+  // Never guess when two employee records normalize to the same name.
+  return matches.length === 1 ? matches[0] : null
 }
 
 function uniqueBounds(bounds: { date: string; source: 'POTRDILO_START' | 'POTRDILO_END'; potrdiloId: string }[]) {
