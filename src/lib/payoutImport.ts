@@ -287,19 +287,59 @@ function personNameKey(...values: unknown[]): string {
   return personNameTokens(...values).join('|')
 }
 
-function matchEmployee(row: PayoutSourceRow, employees: Employee[]): Employee | null {
-  // Include all source name fields. Duplicate tokens are removed, and sorting makes
-  // "IME PRIIMEK" and "PRIIMEK IME" equivalent.
-  const rowKey = personNameKey(row.firstName, row.lastName, row.displayName)
-  if (!rowKey) return null
+function sameTokens(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((token, i) => token === b[i])
+}
 
-  const matches = employees.filter((e) => {
-    const employeeKey = personNameKey(e.firstName, e.lastName, e.displayName)
-    return employeeKey === rowKey
+function isSubset(subset: string[], superset: string[]): boolean {
+  return subset.length > 0 && subset.every((token) => superset.includes(token))
+}
+
+function uniqueEmployee(matches: Employee[]): Employee | null {
+  const byId = new Map(matches.map((e) => [e.id, e]))
+  return byId.size === 1 ? [...byId.values()][0] : null
+}
+
+function matchEmployee(row: PayoutSourceRow, employees: Employee[]): Employee | null {
+  // Keep the source columns separate as well as combined. Some employee records contain
+  // an extra middle name / suffix in displayName even when firstName + lastName are exact.
+  const rowParts = personNameTokens(row.firstName, row.lastName)
+  const rowDisplay = personNameTokens(row.displayName)
+  const rowAll = personNameTokens(row.firstName, row.lastName, row.displayName)
+  if (rowAll.length < 2) return null
+
+  // 1) Safest match: first + last tokens are exactly the same, regardless of order,
+  // accents, duplicate words, or whitespace.
+  const exactParts = employees.filter((e) =>
+    sameTokens(personNameTokens(e.firstName, e.lastName), rowParts)
+  )
+  const exactPartsMatch = uniqueEmployee(exactParts)
+  if (exactPartsMatch) return exactPartsMatch
+
+  // 2) Exact display-name token match.
+  const exactDisplay = employees.filter((e) =>
+    sameTokens(personNameTokens(e.displayName), rowDisplay)
+  )
+  const exactDisplayMatch = uniqueEmployee(exactDisplay)
+  if (exactDisplayMatch) return exactDisplayMatch
+
+  // 3) Exact match across every available name field.
+  const exactAll = employees.filter((e) =>
+    sameTokens(personNameTokens(e.firstName, e.lastName, e.displayName), rowAll)
+  )
+  const exactAllMatch = uniqueEmployee(exactAll)
+  if (exactAllMatch) return exactAllMatch
+
+  // 4) Controlled fallback for records where one side contains an extra middle name,
+  // suffix, or administrative word. We still require at least two matching name tokens
+  // and accept the result only when exactly ONE employee satisfies it.
+  const subsetMatches = employees.filter((e) => {
+    const employeeTokens = personNameTokens(e.firstName, e.lastName, e.displayName)
+    if (employeeTokens.length < 2) return false
+    return isSubset(rowParts, employeeTokens) || isSubset(employeeTokens, rowAll)
   })
 
-  // Never guess when two employee records normalize to the same name.
-  return matches.length === 1 ? matches[0] : null
+  return uniqueEmployee(subsetMatches)
 }
 
 function uniqueBounds(bounds: { date: string; source: 'POTRDILO_START' | 'POTRDILO_END'; potrdiloId: string }[]) {
@@ -330,17 +370,38 @@ function spreadWindowDays(days: string[], count: number, seed: number, excluded:
   return out
 }
 
-function payoutTime(seed: number, partIndex: number): string {
-  // Distinct working-day times for split pieces. The starting point varies by
-  // source row, while adjacent pieces intentionally use different hours.
-  const hours = [8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
-  const minutes = [5, 17, 29, 41, 53]
-  const hour = hours[(Math.abs(seed) + partIndex) % hours.length]
-  const minute = minutes[(Math.abs(seed * 3) + partIndex * 2) % minutes.length]
+function timeToMinutes(value: string, fallback: number): number {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(value.trim())
+  if (!m) return fallback
+  const hour = Number(m[1])
+  const minute = Number(m[2])
+  if (!Number.isInteger(hour) || !Number.isInteger(minute) || hour < 0 || hour > 23 || minute < 0 || minute > 59) return fallback
+  return hour * 60 + minute
+}
+
+function payoutTime(seed: number, partIndex: number, timeFrom: string, timeTo: string): string {
+  // Generate a deterministic time INSIDE the user-selected inclusive range.
+  // Defaults preserve the old 08:00-17:59 working-day window.
+  const from = timeToMinutes(timeFrom, 8 * 60)
+  const to = timeToMinutes(timeTo, 17 * 60 + 59)
+  const start = Math.min(from, to)
+  const end = Math.max(from, to)
+  const span = end - start + 1
+  const offset = (Math.abs(Math.trunc(seed)) * 47 + partIndex * 137) % span
+  const totalMinutes = start + offset
+  const hour = Math.floor(totalMinutes / 60)
+  const minute = totalMinutes % 60
   return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`
 }
 
-export function buildPayoutParts(rows: PayoutSourceRow[], employees: Employee[], potrdila: Potrdilo[], monthKey: string): PayoutPart[] {
+export function buildPayoutParts(
+  rows: PayoutSourceRow[],
+  employees: Employee[],
+  potrdila: Potrdilo[],
+  monthKey: string,
+  timeFrom = '08:00',
+  timeTo = '17:59',
+): PayoutPart[] {
   const win = payoutWindow(monthKey)
   const out: PayoutPart[] = []
   let fallbackCursor = 0
@@ -390,7 +451,7 @@ export function buildPayoutParts(rows: PayoutSourceRow[], employees: Employee[],
         originalAmount: row.amount,
         amount,
         date: slot.date,
-        time: payoutTime(row.rowNo, i),
+        time: payoutTime(row.rowNo, i, timeFrom, timeTo),
         dateSource: slot.source,
         potrdiloId: slot.potrdiloId,
         warning: warnings.join(' · ') || undefined,
