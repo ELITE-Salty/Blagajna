@@ -8,7 +8,7 @@ import { cx, docNo, fmtDate, fmtDateTime, fmtEur, monthLabel, nDokumentovIma, no
 import { closeIdFor, docProblems, sortChrono } from '../lib/numbering'
 import { availableInDesk, balanceInfo, checkBiCover } from '../lib/balance'
 import { can } from '../lib/perms'
-import { Btn, Chip, Warn, inputCls } from '../components/ui'
+import { Btn, Chip, Modal, Warn, inputCls } from '../components/ui'
 import { emptyDoc } from '../db'
 import { deleteDocument, deleteTransfer } from '../lib/persist'
 import { CloseWizard, ManifestView } from './CloseWizard'
@@ -16,6 +16,37 @@ import type { PrintJob } from '../print'
 import { childDesks, locationIdsForView, physicalDesks } from '../lib/desks'
 import { PayoutImportModal } from './PayoutImport'
 import { InternalTransferModal } from './InternalTransfer'
+
+function surnameSort(a: { displayName?: string }, b: { displayName?: string }) {
+  const key = (name = '') => {
+    const parts = name.trim().split(/\s+/).filter(Boolean)
+    const surname = parts.pop() ?? ''
+    return `${surname} ${parts.join(' ')}`.trim()
+  }
+  return key(a.displayName).localeCompare(key(b.displayName), 'sl', { sensitivity: 'base' })
+}
+
+type AttachmentPreview = {
+  name: string
+  mime: string
+  src: string
+  downloadName: string
+}
+
+function attachmentPreview(att: any): AttachmentPreview | null {
+  if (!att) return null
+  const name = att.name ?? att.fileName ?? att.filename ?? 'priponka'
+  const mime = att.mime ?? att.mimeType ?? att.type ?? ''
+  let src = att.dataUrl ?? att.dataURL ?? att.url ?? att.href ?? att.objectUrl ?? ''
+
+  if (!src && typeof att.base64 === 'string') src = `data:${mime || 'application/octet-stream'};base64,${att.base64}`
+  if (!src && typeof att.content === 'string') {
+    src = att.content.startsWith('data:') ? att.content : `data:${mime || 'application/octet-stream'};base64,${att.content}`
+  }
+  if (!src && typeof Blob !== 'undefined' && att.blob instanceof Blob) src = URL.createObjectURL(att.blob)
+  if (!src) return null
+  return { name, mime, src, downloadName: name }
+}
 
 export function MonthWorkspace({
   onOpenDoc, onPrint,
@@ -34,6 +65,8 @@ export function MonthWorkspace({
   const [newEmpForDoc, setNewEmpForDoc] = useState<string | null>(null)
   const [showPayoutImport, setShowPayoutImport] = useState(false)
   const [showTransfer, setShowTransfer] = useState(false)
+  const [attachmentDoc, setAttachmentDoc] = useState<CashDocument | null>(null)
+  const [attachmentIndex, setAttachmentIndex] = useState(0)
   const sync = useSyncState()
 
   const ALL_DESKS = '__all__'
@@ -278,6 +311,30 @@ export function MonthWorkspace({
     }
   }
 
+  const selectedAttachment = attachmentDoc?.attachments?.[attachmentIndex] as any
+  const selectedAttachmentPreview = attachmentPreview(selectedAttachment)
+
+  function showAttachments(d: CashDocument) {
+    setAttachmentDoc(d)
+    setAttachmentIndex(0)
+  }
+
+  function openAttachment(preview: AttachmentPreview | null) {
+    if (!preview) return
+    window.open(preview.src, '_blank', 'noopener,noreferrer')
+  }
+
+  function downloadAttachment(preview: AttachmentPreview | null) {
+    if (!preview) return
+    const a = document.createElement('a')
+    a.href = preview.src
+    a.download = preview.downloadName
+    a.rel = 'noopener'
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+  }
+
   const deskName = isAllDesks ? 'Vse blagajne' : `${desks.find((x) => x.id === viewDeskId)?.name ?? '—'}${isGroupView ? ' · skupaj' : ''}`
   const actionDeskName = desks.find((x) => x.id === actionDeskId)?.name ?? '—'
 
@@ -429,7 +486,7 @@ export function MonthWorkspace({
         </select>
         <select className={cx(inputCls, 'w-auto')} value={fltEmp} onChange={(e) => setFltEmp(e.target.value)}>
           <option value="">Vsi zaposleni</option>
-          {employees.map((e) => <option key={e.id} value={e.id}>{e.displayName}</option>)}
+          {[...employees].sort(surnameSort).map((e) => <option key={e.id} value={e.id}>{e.displayName}</option>)}
         </select>
         <input className={cx(inputCls, 'w-56')} placeholder="Išči (namen, zaposleni, znesek, št.)" value={search} onChange={(e) => setSearch(e.target.value)} />
         <div className="flex-1" />
@@ -527,7 +584,7 @@ export function MonthWorkspace({
                           }}>
                           <option value="">—</option>
                           <option value="__new">➕ Nov zaposleni …</option>
-                          {employees.filter((e) => e.active || e.id === d.employeeId).map((e) => <option key={e.id} value={e.id}>{e.displayName}</option>)}
+                          {employees.filter((e) => e.active || e.id === d.employeeId).sort(surnameSort).map((e) => <option key={e.id} value={e.id}>{e.displayName}</option>)}
                         </select>
                       : <span>{d.employeeName}</span>}
                   </td>
@@ -571,7 +628,7 @@ export function MonthWorkspace({
                     </div>
                   </td>
                   <td className="px-2 py-1 text-right whitespace-nowrap">
-                    {d.attachments.length > 0 && <span className="mr-1 text-[12px]" title={`${d.attachments.length} prilog`}>📎{d.attachments.length}</span>}
+                    {d.attachments.length > 0 && <button className="mr-2 text-[12px] text-blu-700 hover:underline" title={`${d.attachments.length} priponk — klik za predogled`} onClick={() => showAttachments(d)}>📎{d.attachments.length}</button>}
                     {d.potrdiloId && <span className="mr-1 text-[12px]" title="Povezan dopust list">🧾</span>}
                     <button className="text-blu-600 hover:underline text-[13px] mr-2" onClick={() => onOpenDoc(d.id)}>Odpri</button>
                     {editable && <button className="text-slate-500 hover:text-blu-600 text-[13px] mr-2" title="Podvoji vrstico" onClick={() => duplicate(d)}>⎘</button>}
@@ -632,6 +689,58 @@ export function MonthWorkspace({
       <div className="mt-2 text-[11px] text-slate-400">
         Status dokumenta: <b>osnutek</b> ostane do akcije <b>»Zaključi mesec«</b>. Takrat dobi uradno številko in status <b>zaključen</b>. · Hitri vnos: <b>Enter</b> = naslednja vrstica · <b>Ctrl+D</b> = kopiraj prejšnjo vrstico · ⎘ = podvoji.
       </div>
+
+      {attachmentDoc && (
+        <Modal
+          title={`Priponke · ${attachmentDoc.employeeName || attachmentDoc.type}`}
+          wide
+          onClose={() => setAttachmentDoc(null)}
+          footer={<>
+            <Btn onClick={() => openAttachment(selectedAttachmentPreview)} disabled={!selectedAttachmentPreview}>Odpri v novem zavihku</Btn>
+            <Btn onClick={() => downloadAttachment(selectedAttachmentPreview)} disabled={!selectedAttachmentPreview}>Prenesi</Btn>
+            <div className="flex-1" />
+            <Btn kind="primary" onClick={() => setAttachmentDoc(null)}>Zapri</Btn>
+          </>}
+        >
+          <div className="grid md:grid-cols-[220px_1fr] gap-3 min-h-[420px]">
+            <div className="space-y-1">
+              {attachmentDoc.attachments.map((att: any, index: number) => {
+                const preview = attachmentPreview(att)
+                const name = preview?.name ?? att?.name ?? att?.fileName ?? att?.filename ?? `Priponka ${index + 1}`
+                return (
+                  <button
+                    key={att?.id ?? `${name}-${index}`}
+                    className={cx('w-full rounded-md border px-2.5 py-2 text-left text-sm', index === attachmentIndex ? 'border-blu-600 bg-blu-50' : 'border-slate-200 hover:bg-slate-50')}
+                    onClick={() => setAttachmentIndex(index)}
+                  >
+                    <div className="font-medium truncate">📎 {name}</div>
+                    <div className="text-[11px] text-slate-400 mt-0.5">{preview?.mime || 'priponka'}</div>
+                  </button>
+                )
+              })}
+            </div>
+            <div className="rounded-lg border border-slate-200 bg-slate-50 overflow-hidden flex items-center justify-center">
+              {!selectedAttachmentPreview ? (
+                <div className="p-6 text-center text-sm text-slate-500">Predogled te priponke ni na voljo. Uporabite »Odpri v novem zavihku« ali odprite dokument.</div>
+              ) : selectedAttachmentPreview.mime.startsWith('image/') || selectedAttachmentPreview.src.startsWith('data:image/') ? (
+                <img src={selectedAttachmentPreview.src} alt={selectedAttachmentPreview.name} className="max-h-[70vh] max-w-full object-contain" />
+              ) : selectedAttachmentPreview.mime === 'application/pdf' || selectedAttachmentPreview.src.startsWith('data:application/pdf') || selectedAttachmentPreview.name.toLowerCase().endsWith('.pdf') ? (
+                <iframe src={selectedAttachmentPreview.src} title={selectedAttachmentPreview.name} className="w-full h-[70vh] bg-white" />
+              ) : (
+                <div className="p-6 text-center">
+                  <div className="text-4xl mb-2">📎</div>
+                  <div className="font-medium text-slate-700">{selectedAttachmentPreview.name}</div>
+                  <div className="text-sm text-slate-500 mt-1">Ta tip datoteke nima vgrajenega predogleda.</div>
+                  <div className="mt-3 flex justify-center gap-2">
+                    <Btn onClick={() => openAttachment(selectedAttachmentPreview)}>Odpri</Btn>
+                    <Btn onClick={() => downloadAttachment(selectedAttachmentPreview)}>Prenesi</Btn>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </Modal>
+      )}
 
       {showTransfer && <InternalTransferModal initialMonth={month} initialDeskId={!isAllDesks && !isGroupView ? viewDeskId : actionDeskId} onClose={() => setShowTransfer(false)} onDone={() => setShowTransfer(false)} />}
       {showPayoutImport && <PayoutImportModal initialMonth={month} initialDeskId={actionDeskId} onClose={() => setShowPayoutImport(false)} onDone={() => setShowPayoutImport(false)} />}

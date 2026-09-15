@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { useApp } from '../state'
 import type { AccountingRow, CashDesk, CashDocument, Employee, Potrdilo, PrejelStatus } from '../types'
@@ -16,6 +16,77 @@ import { Btn, Chip, ErrBox, Field, Modal, SignaturePad, Warn, inputCls } from '.
 import type { PrintJob } from '../print'
 import { emptyDoc } from '../db'
 import { EmployeeEdit } from './Employees'
+
+
+type EmployeeNameLike = {
+  displayName?: string
+  firstName?: string
+  givenName?: string
+  ime?: string
+  lastName?: string
+  surname?: string
+  priimek?: string
+}
+
+function surnameFirstLabel(employee: EmployeeNameLike) {
+  const displayName = (employee.displayName ?? '').trim().replace(/\s+/g, ' ')
+  const explicitSurname = (employee.lastName ?? employee.surname ?? employee.priimek ?? '').trim().replace(/\s+/g, ' ')
+  const explicitFirstName = (employee.firstName ?? employee.givenName ?? employee.ime ?? '').trim().replace(/\s+/g, ' ')
+
+  if (explicitSurname) {
+    if (explicitFirstName) return `${explicitSurname} ${explicitFirstName}`.trim()
+    if (displayName.toLocaleLowerCase('sl-SI').endsWith(explicitSurname.toLocaleLowerCase('sl-SI'))) {
+      const firstName = displayName.slice(0, displayName.length - explicitSurname.length).trim()
+      return `${explicitSurname} ${firstName}`.trim()
+    }
+    if (displayName) return `${explicitSurname} ${displayName}`.trim()
+    return explicitSurname
+  }
+
+  const parts = displayName.split(/\s+/).filter(Boolean)
+  if (parts.length <= 1) return displayName
+  const firstName = parts[0]
+  const surname = parts.slice(1).join(' ')
+  return `${surname} ${firstName}`
+}
+
+function surnameSort(a: EmployeeNameLike, b: EmployeeNameLike) {
+  return surnameFirstLabel(a).localeCompare(surnameFirstLabel(b), 'sl-SI', { sensitivity: 'base', numeric: true })
+}
+
+type AttachmentPreview = {
+  name: string
+  mime: string
+  src: string
+  downloadName: string
+}
+
+function attachmentPreview(att: any): AttachmentPreview | null {
+  if (!att) return null
+  const name = att.name ?? att.fileName ?? att.filename ?? 'Priponka'
+  const mime = att.mime ?? att.mimeType ?? att.contentType ?? att.type ?? ''
+  const src = att.dataUrl ?? att.dataURL ?? att.url ?? att.href ?? ''
+  if (!src || typeof src !== 'string') return null
+  return { name, mime, src, downloadName: name }
+}
+
+function dataUrlToObjectUrl(src: string) {
+  if (!src.startsWith('data:') || typeof Blob === 'undefined') return { url: src, revoke: false }
+  try {
+    const comma = src.indexOf(',')
+    if (comma < 0) return { url: src, revoke: false }
+    const meta = src.slice(5, comma)
+    const payload = src.slice(comma + 1)
+    const isBase64 = /;base64/i.test(meta)
+    const mime = meta.replace(/;base64/i, '') || 'application/octet-stream'
+    const decoded = isBase64 ? atob(payload) : decodeURIComponent(payload)
+    const bytes = new Uint8Array(decoded.length)
+    for (let i = 0; i < decoded.length; i += 1) bytes[i] = decoded.charCodeAt(i)
+    return { url: URL.createObjectURL(new Blob([bytes], { type: mime })), revoke: true }
+  } catch {
+    return { url: src, revoke: false }
+  }
+}
 
 export function DocForm({
   docId, initial, onClose, onPrint,
@@ -64,6 +135,7 @@ function DocFormInner({
   const [signRole, setSignRole] = useState<string | null>(null)
   const [storno, setStorno] = useState(false)
   const [newEmp, setNewEmp] = useState(false)
+  const [attachmentIndex, setAttachmentIndex] = useState<number | null>(null)
 
   const potrdila = useLiveQuery(
     () => (d.employeeId ? db.potrdila.where('employeeId').equals(d.employeeId).toArray() : Promise.resolve([] as Potrdilo[])),
@@ -86,6 +158,40 @@ function DocFormInner({
   const linked = potrdila.find((p) => p.id === d.potrdiloId) ?? null
   const tx = txAt(d)
   const outsideInterval = linked && (tx < linked.fromAt || tx > linked.toAt)
+
+
+  const selectedAttachment = attachmentIndex != null ? d.attachments[attachmentIndex] : null
+  const selectedAttachmentPreview = useMemo(() => attachmentPreview(selectedAttachment), [selectedAttachment])
+
+  useEffect(() => {
+    if (attachmentIndex != null && attachmentIndex >= d.attachments.length) setAttachmentIndex(null)
+  }, [attachmentIndex, d.attachments.length])
+
+  function openAttachment(preview: AttachmentPreview | null) {
+    if (!preview) return
+    const target = dataUrlToObjectUrl(preview.src)
+    const a = document.createElement('a')
+    a.href = target.url
+    a.target = '_blank'
+    a.rel = 'noopener noreferrer'
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    if (target.revoke) window.setTimeout(() => URL.revokeObjectURL(target.url), 60_000)
+  }
+
+  function downloadAttachment(preview: AttachmentPreview | null) {
+    if (!preview) return
+    const target = dataUrlToObjectUrl(preview.src)
+    const a = document.createElement('a')
+    a.href = target.url
+    a.download = preview.downloadName
+    a.rel = 'noopener'
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    if (target.revoke) window.setTimeout(() => URL.revokeObjectURL(target.url), 60_000)
+  }
 
   async function save() {
     setErr('')
@@ -232,7 +338,7 @@ function DocFormInner({
           >
             <option value="">— izberi zaposlenega —</option>
             <option value="__new">➕ Nov zaposleni …</option>
-            {employees.filter((e) => e.active || e.id === d.employeeId).map((e) => <option key={e.id} value={e.id}>{e.displayName}</option>)}
+            {employees.filter((e) => e.active || e.id === d.employeeId).slice().sort(surnameSort).map((e) => <option key={e.id} value={e.id}>{surnameFirstLabel(e)}</option>)}
           </select>
         </Field>
         <Field label="Način plačila">
@@ -412,13 +518,20 @@ function DocFormInner({
         </div>
         {d.attachments.length > 0 && (
           <div className="flex flex-wrap gap-2 mt-1">
-            {d.attachments.map((a) => (
-              <div key={a.id} className="border border-slate-200 rounded-md p-1.5 w-28">
-                {a.mime.startsWith('image/')
-                  ? <img src={a.dataUrl} alt={a.name} className="h-16 w-full object-cover rounded" />
-                  : <div className="h-16 grid place-items-center text-2xl">📄</div>}
-                <div className="text-[10px] truncate mt-1" title={a.name}>{a.name}</div>
-                {editable && <button className="text-[10px] text-red-600" onClick={() => set({ attachments: d.attachments.filter((x) => x.id !== a.id) })}>odstrani</button>}
+            {d.attachments.map((a, index) => (
+              <div key={a.id} className="border border-slate-200 rounded-md p-1.5 w-28 hover:border-blu-400 hover:bg-blu-50/40 transition-colors">
+                <button
+                  type="button"
+                  className="w-full text-left cursor-pointer"
+                  title={`Odpri priponko: ${a.name}`}
+                  onClick={() => setAttachmentIndex(index)}
+                >
+                  {a.mime.startsWith('image/')
+                    ? <img src={a.dataUrl} alt={a.name} className="h-16 w-full object-cover rounded" />
+                    : <div className="h-16 grid place-items-center text-2xl">📄</div>}
+                  <div className="text-[10px] truncate mt-1 text-blu-700 hover:underline" title={a.name}>{a.name}</div>
+                </button>
+                {editable && <button type="button" className="text-[10px] text-red-600" onClick={() => { set({ attachments: d.attachments.filter((x) => x.id !== a.id) }); if (attachmentIndex === index) setAttachmentIndex(null) }}>odstrani</button>}
               </div>
             ))}
           </div>
@@ -430,6 +543,41 @@ function DocFormInner({
           <textarea className={cx(inputCls, 'h-16')} value={d.notes} disabled={!editable} onChange={(e) => set({ notes: e.target.value })} />
         </Field>
       </div>
+
+
+      {attachmentIndex != null && selectedAttachment && (
+        <Modal
+          title={`Priponka · ${selectedAttachment.name}`}
+          wide
+          onClose={() => setAttachmentIndex(null)}
+          footer={<>
+            <Btn onClick={() => openAttachment(selectedAttachmentPreview)} disabled={!selectedAttachmentPreview}>Odpri v novem zavihku</Btn>
+            <Btn onClick={() => downloadAttachment(selectedAttachmentPreview)} disabled={!selectedAttachmentPreview}>Prenesi</Btn>
+            <div className="flex-1" />
+            <Btn kind="primary" onClick={() => setAttachmentIndex(null)}>Zapri</Btn>
+          </>}
+        >
+          <div className="rounded-lg border border-slate-200 bg-slate-50 overflow-hidden min-h-[420px] flex items-center justify-center">
+            {!selectedAttachmentPreview ? (
+              <div className="p-6 text-center text-sm text-slate-500">Predogled te priponke ni na voljo.</div>
+            ) : selectedAttachmentPreview.mime.startsWith('image/') || selectedAttachmentPreview.src.startsWith('data:image/') ? (
+              <img src={selectedAttachmentPreview.src} alt={selectedAttachmentPreview.name} className="max-h-[70vh] max-w-full object-contain" />
+            ) : selectedAttachmentPreview.mime === 'application/pdf' || selectedAttachmentPreview.src.startsWith('data:application/pdf') || selectedAttachmentPreview.name.toLowerCase().endsWith('.pdf') ? (
+              <iframe src={selectedAttachmentPreview.src} title={selectedAttachmentPreview.name} className="w-full h-[70vh] bg-white" />
+            ) : (
+              <div className="p-6 text-center">
+                <div className="text-4xl mb-2">📎</div>
+                <div className="font-medium text-slate-700">{selectedAttachmentPreview.name}</div>
+                <div className="text-sm text-slate-500 mt-1">Ta tip datoteke nima vgrajenega predogleda.</div>
+                <div className="mt-3 flex justify-center gap-2">
+                  <Btn onClick={() => openAttachment(selectedAttachmentPreview)}>Odpri</Btn>
+                  <Btn onClick={() => downloadAttachment(selectedAttachmentPreview)}>Prenesi</Btn>
+                </div>
+              </div>
+            )}
+          </div>
+        </Modal>
+      )}
 
       {signRole && (
         <SignaturePad

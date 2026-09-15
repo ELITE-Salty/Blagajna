@@ -7,6 +7,48 @@ import { cx, docNo, fmtDate, fmtDateTime, fmtEur, nowIso, todayIso, uuid } from 
 import { Btn, Chip, ErrBox, Field, Modal, SignaturePad, Warn, inputCls } from '../components/ui'
 import type { PrintJob } from '../print'
 
+type EmployeeNameLike = {
+  displayName?: string
+  firstName?: string
+  givenName?: string
+  ime?: string
+  lastName?: string
+  surname?: string
+  priimek?: string
+}
+
+function surnameFirstLabel(employee: EmployeeNameLike) {
+  const displayName = (employee.displayName ?? '').trim().replace(/\s+/g, ' ')
+  const explicitSurname = (employee.lastName ?? employee.surname ?? employee.priimek ?? '').trim().replace(/\s+/g, ' ')
+  const explicitFirstName = (employee.firstName ?? employee.givenName ?? employee.ime ?? '').trim().replace(/\s+/g, ' ')
+
+  if (explicitSurname) {
+    if (explicitFirstName) return `${explicitSurname} ${explicitFirstName}`.trim()
+
+    // Older imported employees may have a surname field but no separate first-name field.
+    // If displayName is »IME PRIIMEK«, remove the known surname from the end before rendering.
+    if (displayName.toLocaleLowerCase('sl-SI').endsWith(explicitSurname.toLocaleLowerCase('sl-SI'))) {
+      const firstName = displayName.slice(0, displayName.length - explicitSurname.length).trim()
+      return `${explicitSurname} ${firstName}`.trim()
+    }
+    if (displayName) return `${explicitSurname} ${displayName}`.trim()
+    return explicitSurname
+  }
+
+  // Fallback for records that only contain displayName. In this project imported names are
+  // normally stored as »IME PRIIMEK«; treat the first word as the given name and the rest
+  // as the surname so multi-word surnames such as »SINGH RUHAL« stay together.
+  const parts = displayName.split(/\s+/).filter(Boolean)
+  if (parts.length <= 1) return displayName
+  const firstName = parts[0]
+  const surname = parts.slice(1).join(' ')
+  return `${surname} ${firstName}`
+}
+
+function surnameSort(a: EmployeeNameLike, b: EmployeeNameLike) {
+  return surnameFirstLabel(a).localeCompare(surnameFirstLabel(b), 'sl-SI', { sensitivity: 'base', numeric: true })
+}
+
 export function PotrdilaView({
   onOpenPotrdilo, onOpenDoc, onPrintPotrdilo,
 }: {
@@ -23,7 +65,7 @@ export function PotrdilaView({
 
   const list = potrdila
     .filter((p) => !fltEmp || p.employeeId === fltEmp)
-    .sort((a, b) => b.fromAt.localeCompare(a.fromAt))
+    .sort((a, b) => surnameSort({ displayName: a.employeeName }, { displayName: b.employeeName }) || b.fromAt.localeCompare(a.fromAt))
 
   return (
     <div>
@@ -32,7 +74,7 @@ export function PotrdilaView({
         <div className="flex-1" />
         <select className={cx(inputCls, 'w-auto')} value={fltEmp} onChange={(e) => setFltEmp(e.target.value)}>
           <option value="">Vsi zaposleni</option>
-          {employees.map((e) => <option key={e.id} value={e.id}>{e.displayName}</option>)}
+          {[...employees].sort(surnameSort).map((e) => <option key={e.id} value={e.id}>{surnameFirstLabel(e)}</option>)}
         </select>
         <Btn kind="primary" onClick={() => onOpenPotrdilo(null)}>+ Novo potrdilo</Btn>
       </div>
@@ -57,7 +99,7 @@ export function PotrdilaView({
               const linked = docs.filter((d) => d.potrdiloId === p.id)
               return (
                 <tr key={p.id} className="border-t border-slate-100">
-                  <td className="px-3 py-2 font-medium">{p.employeeName}</td>
+                  <td className="px-3 py-2 font-medium">{surnameFirstLabel({ displayName: p.employeeName })}</td>
                   <td className="px-3 py-2 font-mono text-[12px]">{fmtDateTime(p.fromAt)}</td>
                   <td className="px-3 py-2 font-mono text-[12px]">{fmtDateTime(p.toAt)}</td>
                   <td className="px-3 py-2 text-[12px]">{ACTIVITY_LABELS[p.activityType]}</td>
@@ -109,15 +151,17 @@ export function PotrdiloForm({
   const employees = useLiveQuery(() => db.employees.toArray(), []) ?? []
   if (potrdiloId && !stored) return null
 
+  const activity16 = (Object.keys(ACTIVITY_FIELD_NO) as ActivityType[]).find((k) => ACTIVITY_FIELD_NO[k] === 16) ?? 'ANNUAL_LEAVE'
+
   const init: Potrdilo = stored ?? {
     id: uuid(),
     employeeId: initialEmployeeId ?? '',
     employeeName: '', employeeDateOfBirth: '', employeeIdNumber: '', employeeEmploymentStart: '',
     fromAt: '', toAt: '',
-    activityType: 'ANNUAL_LEAVE',
+    activityType: activity16,
     companyPlace: settings.company.city, companyDate: todayIso(),
     driverPlace: settings.company.city, driverDate: todayIso(),
-    declarantName: settings.company.declarantName, declarantPosition: settings.company.declarantPosition,
+    declarantName: app.userLabel, declarantPosition: 'Administrator',
     signatures: [], syncStatus: 'LOKALNO',
     createdAt: nowIso(), createdBy: app.userLabel, updatedAt: nowIso(),
   }
@@ -142,6 +186,8 @@ function PotrdiloFormInner({
   const [sign, setSign] = useState<null | 'PODJETJE' | 'VOZNIK'>(null)
   const [saved, setSaved] = useState(!isNew)
   const linkedDocs = useLiveQuery(() => db.docs.where('potrdiloId').equals(init.id).toArray(), [init.id]) ?? []
+  const selectedEmployee = employees.find((e: any) => e.id === p.employeeId)
+  const driverDisplayName = selectedEmployee ? surnameFirstLabel(selectedEmployee) : surnameFirstLabel({ displayName: p.employeeName })
 
   const set = (patch: Partial<Potrdilo>) => setP((x) => ({ ...x, ...patch }))
 
@@ -192,7 +238,7 @@ function PotrdiloFormInner({
 
   return (
     <Modal
-      title={<span className="flex items-center gap-2">Potrdilo o dejavnostih {p.employeeName && <Chip tone="blue">{p.employeeName}</Chip>}{p.syncStatus === 'LOKALNO' && <Chip tone="violet">Nesinhronizirano</Chip>}</span>}
+      title={<span className="flex items-center gap-2">Potrdilo o dejavnostih {p.employeeName && <Chip tone="blue">{driverDisplayName}</Chip>}{p.syncStatus === 'LOKALNO' && <Chip tone="violet">Nesinhronizirano</Chip>}</span>}
       wide
       onClose={onClose}
       footer={<>
@@ -217,7 +263,7 @@ function PotrdiloFormInner({
         <Field label="Voznik (zaposleni)">
           <select className={inputCls} value={p.employeeId} onChange={(e) => pickEmployee(e.target.value)}>
             <option value="">— izberi —</option>
-            {employees.filter((e: any) => e.active || e.id === p.employeeId).map((e: any) => <option key={e.id} value={e.id}>{e.displayName}</option>)}
+            {employees.filter((e: any) => e.active || e.id === p.employeeId).sort(surnameSort).map((e: any) => <option key={e.id} value={e.id}>{surnameFirstLabel(e)}</option>)}
           </select>
         </Field>
         <div className="grid grid-cols-3 gap-3">
