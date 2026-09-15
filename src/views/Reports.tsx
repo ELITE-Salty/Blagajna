@@ -5,9 +5,34 @@ import type { CashDocument, CashTransfer, DocType } from '../types'
 import { cx, currentMonthKey, docNo, fmtDate, fmtEur, fmtNum, todayIso, txAt } from '../lib/util'
 import { docDelta, transferDelta } from '../lib/balance'
 import { sortChrono } from '../lib/numbering'
+import { locationIdsForView } from '../lib/desks'
 import { Btn, Chip, Warn, inputCls } from '../components/ui'
 import type { KnjigaJob, PrintJob } from '../print'
 import { downloadXlsx, excelDateSerial, XLSX_STYLE, type XlsxCell, type XlsxWorkbook } from '../lib/xlsx'
+
+function csvCell(value: unknown): string {
+  const s = String(value ?? '')
+  return /[;"\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+}
+
+function csvNum(value: number): string {
+  return fmtNum(value)
+}
+
+function employeeSurname(e: any): string {
+  const explicit = e?.lastName ?? e?.surname ?? e?.priimek
+  if (typeof explicit === 'string' && explicit.trim()) return explicit.trim()
+
+  const parts = String(e?.displayName ?? '').trim().split(/\s+/).filter(Boolean)
+  return parts.length > 1 ? parts[parts.length - 1] : (parts[0] ?? '')
+}
+
+function sortEmployeesBySurname<T extends { id: string; displayName?: string }>(employees: T[]): T[] {
+  return employees.slice().sort((a: any, b: any) => {
+    const bySurname = employeeSurname(a).localeCompare(employeeSurname(b), 'sl', { sensitivity: 'base' })
+    return bySurname || String(a.displayName ?? '').localeCompare(String(b.displayName ?? ''), 'sl', { sensitivity: 'base' })
+  })
+}
 
 export function ReportsView({
   onOpenDoc, onPrint,
@@ -184,7 +209,7 @@ export function ReportsView({
         t.transactionTime,
         csvCell(deskOf(t.fromDeskId)?.name ?? t.fromDeskId),
         csvCell(deskOf(t.toDeskId)?.name ?? t.toDeskId),
-        num(t.amount),
+        csvNum(t.amount),
         csvCell(t.notes || ''),
       ].join(';'))
     }
@@ -269,6 +294,7 @@ export function ReportsView({
         <h1 className="text-lg font-semibold text-slate-800">Poročila in izvoz</h1>
         <div className="flex-1" />
         <Btn onClick={exportExcel} title="Pravi Excel .xlsx z oblikovanjem, filtri in povzetkom">⬇️ Izvozi Excel (.xlsx){sel.size > 0 ? ` — izbrane (${sel.size})` : ''}</Btn>
+        <Btn onClick={exportTransfersCsv} disabled={transferRows.length === 0} title="Izvozi interne prenose za izbrano obdobje in blagajno v CSV">⬇️ Prenosi CSV ({transferRows.length})</Btn>
         <Btn onClick={printSelected} disabled={sel.size === 0} title="Natisne izbrane dokumente kot obrazce BP/BI">🖨️ Natisni izbrane ({sel.size})</Btn>
         <Btn kind="primary" onClick={printKnjiga} disabled={!deskId || !!selectedDesk?.isGroup} title={selectedDesk?.isGroup ? 'Za klasično blagajniško knjigo izberite eno interno lokacijo.' : deskId ? 'Klasična blagajniška knjiga s tekočim saldom' : 'Izberite eno blagajno'}>📒 Blagajniška knjiga</Btn>
       </div>
@@ -293,7 +319,7 @@ export function ReportsView({
         </select>
         <select className={cx(inputCls, 'w-auto')} value={emp} onChange={(e) => setEmp(e.target.value)}>
           <option value="">Vsi zaposleni</option>
-          {employees.map((e) => <option key={e.id} value={e.id}>{e.displayName}</option>)}
+          {sortEmployeesBySurname(employees).map((e) => <option key={e.id} value={e.id}>{e.displayName}</option>)}
         </select>
         <select className={cx(inputCls, 'w-auto')} value={status} onChange={(e) => setStatus(e.target.value)}>
           <option value="">Vsi statusi</option>
