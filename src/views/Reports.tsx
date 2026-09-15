@@ -343,9 +343,9 @@ export function ReportsView({
       <div className="mt-2 text-[11px] text-slate-500">Osnutek se spremeni v zaključen dokument ob akciji <b>»Zaključi mesec«</b>; takrat dokument dobi tudi uradno številko.</div>
 
       {/* Tabela */}
-      <div className="mt-3 overflow-x-auto rounded-lg border border-slate-200 bg-white">
+      <div className="mt-3 h-[520px] overflow-auto overscroll-contain rounded-lg border border-slate-200 bg-white">
         <table className="w-full table-fixed text-sm min-w-[1080px]">
-          <thead>
+          <thead className="sticky top-0 z-10 bg-slate-50 shadow-sm">
             <tr className="bg-slate-50 text-[11px] uppercase tracking-wide text-slate-500 text-left">
               <th className="px-2 py-2 w-8">
                 <input type="checkbox" checked={allSelected} onChange={() => setSel(allSelected ? new Set() : new Set(rows.map((d) => d.id)))} title="Izberi vse" />
@@ -389,9 +389,9 @@ export function ReportsView({
 
       <div className="mt-4">
         <div className="flex items-center gap-2 mb-1.5"><span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">↔ Interni prenosi</span><Chip>{transferRows.length}</Chip></div>
-        <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
+        <div className="h-[260px] overflow-auto overscroll-contain rounded-lg border border-slate-200 bg-white">
           <table className="w-full text-sm min-w-[700px]">
-            <thead className="bg-slate-50 text-[11px] uppercase tracking-wide text-slate-500 text-left"><tr><th className="px-2 py-2">Datum · čas</th><th className="px-2 py-2">Iz blagajne</th><th className="px-2 py-2">V blagajno</th><th className="px-2 py-2 text-right">Znesek</th><th className="px-2 py-2">Opomba</th></tr></thead>
+            <thead className="sticky top-0 z-10 bg-slate-50 text-[11px] uppercase tracking-wide text-slate-500 text-left shadow-sm"><tr><th className="px-2 py-2">Datum · čas</th><th className="px-2 py-2">Iz blagajne</th><th className="px-2 py-2">V blagajno</th><th className="px-2 py-2 text-right">Znesek</th><th className="px-2 py-2">Opomba</th></tr></thead>
             <tbody>
               {transferRows.length === 0 && <tr><td colSpan={5} className="px-3 py-5 text-center text-slate-400">Ni internih prenosov v izbranem obdobju.</td></tr>}
               {transferRows.map((t) => <tr key={t.id} className="border-t border-slate-100"><td className="px-2 py-1.5 font-mono text-[12px]">{fmtDate(t.transactionDate)} {t.transactionTime}</td><td className="px-2 py-1.5 text-red-700 font-medium">{deskOf(t.fromDeskId)?.name ?? t.fromDeskId}</td><td className="px-2 py-1.5 text-emerald-700 font-medium">{deskOf(t.toDeskId)?.name ?? t.toDeskId}</td><td className="px-2 py-1.5 text-right font-mono font-semibold">{fmtEur(t.amount)}</td><td className="px-2 py-1.5">{t.notes || '—'}</td></tr>)}

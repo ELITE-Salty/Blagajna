@@ -81,9 +81,9 @@ export function PotrdilaView({
 
       <div className="mt-3"><Warn>Potrdilo o dejavnostih ni splošno obvezen dokument. Uporablja se le kot dopolnilo v upravičenih primerih, ko dejavnosti ni bilo mogoče ustrezno zabeležiti s tahografom oziroma ročnim vnosom. Če se obrazec uporabi, mora biti pravilno izpolnjen in podpisan.</Warn></div>
 
-      <div className="mt-3 overflow-x-auto rounded-lg border border-slate-200 bg-white">
+      <div className="mt-3 h-[520px] overflow-auto overscroll-contain rounded-lg border border-slate-200 bg-white">
         <table className="w-full text-sm min-w-[860px]">
-          <thead>
+          <thead className="sticky top-0 z-10 bg-slate-50 shadow-sm">
             <tr className="bg-slate-50 text-[11px] uppercase tracking-wide text-slate-500 text-left">
               <th className="px-3 py-2">Voznik</th>
               <th className="px-3 py-2">Od</th>

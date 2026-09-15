@@ -116,9 +116,9 @@ export function EmployeesView({
   }
 
   return (
-    <div className="grid md:grid-cols-[320px_1fr] gap-4">
-      <div>
-        <div className="flex flex-wrap gap-2 items-center">
+    <div className="grid md:grid-cols-[320px_1fr] gap-4 md:h-[620px]">
+      <div className="min-h-0 flex flex-col">
+        <div className="flex flex-wrap gap-2 items-center shrink-0">
           <input className={cx(inputCls, 'min-w-[160px] flex-1')} placeholder="Išči zaposlenega …" value={search} onChange={(e) => setSearch(e.target.value)} />
           {manage && (
             <label className="inline-flex shrink-0 cursor-pointer items-center rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50" title="Uvozi seznam zaposlenih iz CSV datoteke">
@@ -130,7 +130,7 @@ export function EmployeesView({
           {manage && <Btn onClick={downloadEmployeeCsvTemplate} title="Prenesi prazno CSV predlogo za neposreden uvoz">CSV predloga</Btn>}
           {manage && <Btn kind="primary" onClick={() => setEdit(newEmployee())}>+ Nov</Btn>}
         </div>
-        <div className="mt-2 rounded-lg border border-slate-200 bg-white divide-y divide-slate-100 overflow-hidden">
+        <div className="mt-2 min-h-0 flex-1 rounded-lg border border-slate-200 bg-white divide-y divide-slate-100 overflow-y-auto overscroll-contain">
           {list.map((e) => (
             <button key={e.id} className={cx('w-full text-left px-3 py-2 hover:bg-blu-50 flex items-center gap-2', sel === e.id && 'bg-blu-50 border-l-2 border-blu-600')} onClick={() => setSel(e.id)}>
               <span className="flex-1">
@@ -144,7 +144,7 @@ export function EmployeesView({
         </div>
       </div>
 
-      <div>
+      <div className="min-h-0 overflow-y-auto overscroll-contain">
         {!selected && <div className="rounded-lg border border-dashed border-slate-300 p-10 text-center text-slate-400">Izberite zaposlenega s seznama.</div>}
         {selected && (
           <EmployeeDetail
@@ -299,7 +299,7 @@ function EmployeeDetail({
       <div className="grid md:grid-cols-2 gap-4 mt-4">
         <div>
           <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-400 mb-1">Blagajniški dokumenti ({docs.length})</div>
-          <div className="space-y-1">
+          <div className="space-y-1 max-h-[240px] overflow-y-auto overscroll-contain pr-1">
             {recent.slice(0, 8).map((d) => (
               <button key={d.id} className="flex w-full items-center gap-2 text-sm bg-slate-50 hover:bg-blu-50 rounded-md px-2 py-1 border border-slate-100" onClick={() => onOpenDoc(d.id)}>
                 <Chip tone={d.type === 'BP' ? 'green' : 'red'}>{d.type}</Chip>
@@ -315,7 +315,7 @@ function EmployeeDetail({
         </div>
         <div>
           <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-400 mb-1">Potrdila o dejavnostih ({potrdila.length})</div>
-          <div className="space-y-1">
+          <div className="space-y-1 max-h-[240px] overflow-y-auto overscroll-contain pr-1">
             {potrdila.slice().sort((a: any, b: any) => b.fromAt.localeCompare(a.fromAt)).map((p: any) => {
               const active = p.fromAt <= now && now <= p.toAt
               return (
