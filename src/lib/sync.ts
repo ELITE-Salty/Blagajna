@@ -14,6 +14,14 @@ export interface SyncState {
 }
 
 const LOCAL_ONLY_SETTINGS = ['currentRole', 'currentUserName', 'activeDeskId'] as const
+const DAILY_FULL_REFRESH_KV = 'last-full-refresh-day'
+
+function localDayKey(date = new Date()): string {
+  const y = date.getFullYear()
+  const m = String(date.getMonth() + 1).padStart(2, '0')
+  const d = String(date.getDate()).padStart(2, '0')
+  return `${y}-${m}-${d}`
+}
 
 let db: BlagajnaDB | null = null
 let mode: AppMode = 'demo'
@@ -62,8 +70,8 @@ async function demoSync() {
   set({ syncing: false, lastSync: nowIso(), pending: await countPending() })
 }
 
-async function serverSync(force = false) {
-  if (!db || !getToken()) return
+async function serverSync(force = false): Promise<boolean> {
+  if (!db || !getToken()) return false
   set({ syncing: true, error: null })
   try {
     // ---- PUSH ----
@@ -129,6 +137,7 @@ async function serverSync(force = false) {
       const pendingIds = new Set([
         ...(await db.docs.where('syncStatus').equals('LOKALNO').toArray()).map((d) => `docs:${d.id}`),
         ...(await db.potrdila.filter((x) => x.syncStatus === 'LOKALNO').toArray()).map((p) => `potrdila:${p.id}`),
+        ...(await db.transfers.where('syncStatus').equals('LOKALNO').toArray()).map((t) => `transfers:${t.id}`),
         ...(await db.outbox.toArray()).map((r) => `${r.tbl}:${r.id}`),
       ])
       const apply = async (tbl: string, rows: any[]) => {
@@ -155,8 +164,10 @@ async function serverSync(force = false) {
       await db.kv.put({ k: 'sync-cursor', v: String(pulled.cursor ?? since) })
     }
     set({ syncing: false, lastSync: nowIso(), pending: await countPending(), error: state.error })
+    return true
   } catch (e: any) {
     set({ syncing: false, error: String(e?.message ?? e), pending: await countPending() })
+    return false
   }
 }
 
@@ -175,6 +186,110 @@ async function mergeSettings(server: any) {
     currentUserName: local?.currentUserName ?? '',
     activeDeskId: local?.activeDeskId ?? server.activeDeskId ?? '',
   })
+}
+
+async function isDailyFullRefreshDue(): Promise<boolean> {
+  if (!db || mode !== 'server') return false
+  const last = await db.kv.get(DAILY_FULL_REFRESH_KV)
+  return last?.v !== localDayKey()
+}
+
+async function replaceWithFullSnapshot(pulled: any): Promise<void> {
+  if (!db) return
+  const currentDb = db
+
+  const outbox = await currentDb.outbox.toArray()
+  const pendingDeletes = new Set(outbox.filter((r) => r.del).map((r) => `${r.tbl}:${r.id}`))
+  const pendingRows = new Map<string, any>()
+
+  const remember = (tbl: string, row: any) => {
+    if (!row?.id) return
+    const key = `${tbl}:${row.id}`
+    if (!pendingDeletes.has(key)) pendingRows.set(key, row)
+  }
+
+  for (const row of await currentDb.docs.where('syncStatus').equals('LOKALNO').toArray()) remember('docs', row)
+  for (const row of await currentDb.potrdila.filter((x) => x.syncStatus === 'LOKALNO').toArray()) remember('potrdila', row)
+  for (const row of await currentDb.transfers.where('syncStatus').equals('LOKALNO').toArray()) remember('transfers', row)
+
+  for (const item of outbox.filter((r) => !r.del)) {
+    const row = await (currentDb as any)[item.tbl]?.get(item.id)
+    if (row) remember(item.tbl, row)
+  }
+
+  const localSettings = await currentDb.settings.get('main')
+
+  const rowsFor = (tbl: string, serverRows: any[] | undefined): any[] => {
+    const merged = new Map<string, any>()
+    for (const row of serverRows || []) {
+      const key = `${tbl}:${row.id}`
+      if (!pendingDeletes.has(key)) merged.set(row.id, row)
+    }
+    for (const [key, row] of pendingRows) {
+      if (key.startsWith(`${tbl}:`)) merged.set(row.id, row)
+    }
+    return [...merged.values()]
+  }
+
+  const settingsRows = rowsFor('settings', pulled.settings)
+  const serverMain = settingsRows.find((s) => s.id === 'main') ?? settingsRows[0]
+  const mergedMain = serverMain
+    ? {
+        ...serverMain,
+        id: 'main',
+        currentRole: localSettings?.currentRole ?? serverMain.currentRole ?? 'FINANCE',
+        currentUserName: localSettings?.currentUserName ?? '',
+        activeDeskId: localSettings?.activeDeskId ?? serverMain.activeDeskId ?? '',
+      }
+    : localSettings
+
+  await currentDb.transaction(
+    'rw',
+    [currentDb.docs, currentDb.potrdila, currentDb.employees, currentDb.desks, currentDb.transfers, currentDb.settings, currentDb.closes, currentDb.audit, currentDb.kv],
+    async () => {
+      await currentDb.docs.clear()
+      const docs = rowsFor('docs', pulled.docs)
+      if (docs.length) await currentDb.docs.bulkPut(docs)
+
+      await currentDb.potrdila.clear()
+      const pots = rowsFor('potrdila', pulled.potrdila)
+      if (pots.length) await currentDb.potrdila.bulkPut(pots)
+
+      await currentDb.employees.clear()
+      const employees = rowsFor('employees', pulled.employees)
+      if (employees.length) await currentDb.employees.bulkPut(employees)
+
+      await currentDb.desks.clear()
+      const desks = rowsFor('desks', pulled.desks)
+      if (desks.length) await currentDb.desks.bulkPut(desks)
+
+      await currentDb.transfers.clear()
+      const transfers = rowsFor('transfers', pulled.transfers)
+      if (transfers.length) await currentDb.transfers.bulkPut(transfers)
+
+      await currentDb.closes.clear()
+      if (pulled.closes?.length) await currentDb.closes.bulkPut(pulled.closes)
+
+      await currentDb.audit.clear()
+      const auditRows = rowsFor('audit', (pulled.audit || []).map((a: any) => ({
+        id: a.id,
+        at: a.at,
+        user: a.user,
+        role: a.role,
+        action: a.action,
+        entity: a.entity,
+        entityId: a.entityId,
+        details: a.details || '',
+      })))
+      if (auditRows.length) await currentDb.audit.bulkPut(auditRows)
+
+      await currentDb.settings.clear()
+      if (mergedMain) await currentDb.settings.put(mergedMain)
+
+      await currentDb.kv.put({ k: 'sync-cursor', v: String(pulled.cursor ?? 0) })
+      await currentDb.kv.put({ k: DAILY_FULL_REFRESH_KV, v: localDayKey() })
+    },
+  )
 }
 
 /** Ročna / takojšnja sinhronizacija. */
@@ -198,11 +313,32 @@ export async function syncNow(force = true): Promise<void> {
  */
 export async function refreshData(): Promise<void> {
   if (!db || running) return
-  if (mode === 'server') {
-    await db.kv.delete('sync-cursor')
-    lastPullAt = 0
+  running = true
+  try {
+    if (mode !== 'server') {
+      await demoSync()
+      return
+    }
+    if (!getToken()) return
+
+    // 1) Push local changes first. If this fails, do NOT clear local data.
+    const syncOk = await serverSync(true)
+    if (!syncOk) return
+
+    set({ syncing: true, error: null })
+
+    // 2) Pull from cursor 0 and treat it as the authoritative server snapshot.
+    // 3) Replace the mirrored tables so stale local rows disappear too.
+    const pulled = await apiPull(0)
+    await replaceWithFullSnapshot(pulled)
+
+    lastPullAt = Date.now()
+    set({ syncing: false, lastSync: nowIso(), pending: await countPending(), error: null })
+  } catch (e: any) {
+    set({ syncing: false, error: String(e?.message ?? e), pending: await countPending() })
+  } finally {
+    running = false
   }
-  await syncNow(true)
 }
 
 export function startSyncEngine(theDb: BlagajnaDB, theMode: AppMode) {
@@ -222,8 +358,16 @@ export function startSyncEngine(theDb: BlagajnaDB, theMode: AppMode) {
     const pending = await countPending()
     if (pending !== state.pending) set({ pending })
     if (!state.online || running) return
+
     const auto = await isAutoSync()
     if (mode === 'server' && !getToken()) return
+
+    // Once per local calendar day do a real full refresh, not only an incremental pull.
+    if (mode === 'server' && (force || auto) && await isDailyFullRefreshDue()) {
+      await refreshData()
+      return
+    }
+
     if (force || (auto && (pending > 0 || Date.now() - lastPullAt > 25000))) {
       await syncNow(force)
     }
