@@ -3,11 +3,12 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { useApp } from '../state'
-import { Btn, Chip, ErrBox, Field, Modal, Warn, inputCls } from '../components/ui'
+import { Btn, ErrBox, Field, Modal, inputCls } from '../components/ui'
 import { emptyDoc } from '../db'
 import { balanceInfo } from '../lib/balance'
 import {
   MIN_GAP_WORKDAYS,
+  SPLIT_THRESHOLD_EUR,
   buildPayoutParts,
   formatSloDate,
   normalizePayoutTime,
@@ -64,8 +65,19 @@ function buildCashEvents(docs: any[], transfers: any[], deskId: string): CashEve
 function sourceLabel(p: PayoutPart): string {
   if (p.dateSource === 'POTRDILO_START') return 'začetek dopust lista'
   if (p.dateSource === 'POTRDILO_END') return 'konec dopust lista'
-  if (p.dateSource === 'MANUAL') return 'ročno popravljeno'
+  if (p.dateSource === 'MANUAL') return 'ročno'
   return 'okno 20.–16.'
+}
+
+/** Compact label + value pair for the single status bar. */
+function Stat({ label, value, tone }: { label: string; value: string; tone?: 'ok' | 'bad' }) {
+  const color = tone === 'bad' ? 'text-red-700' : tone === 'ok' ? 'text-emerald-700' : 'text-slate-800'
+  return (
+    <div className="flex flex-col leading-tight">
+      <span className="text-[9.5px] font-semibold uppercase tracking-wider text-slate-400">{label}</span>
+      <span className={`font-mono text-[12.5px] font-medium tabular-nums ${color}`}>{value}</span>
+    </div>
+  )
 }
 
 function PayoutImportModal({ initialMonth, initialDeskId, onClose, onDone }: {
@@ -91,6 +103,12 @@ function PayoutImportModal({ initialMonth, initialDeskId, onClose, onDone }: {
   const [partEdits, setPartEdits] = useState<Record<string, PartEdit>>({})
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
+
+  // Presentation state: the setup fields are a one-time act, so they fold away
+  // once a file is loaded. Everything else the user needs is per-row.
+  const [setupOpen, setSetupOpen] = useState(true)
+  const [rulesOpen, setRulesOpen] = useState(false)
+  const [onlyProblems, setOnlyProblems] = useState(false)
 
   useEffect(() => {
     if (!deskId && locations.length) {
@@ -178,8 +196,8 @@ function PayoutImportModal({ initialMonth, initialDeskId, onClose, onDone }: {
     [parts, win.start, win.end, timeFrom, timeTo, cashContext, potrdila],
   )
 
-  // One single error map feeds both the table and the import gate, so nothing can
-  // be red in the table yet still importable (or the other way round).
+  // One single error map feeds the table, the status bar and the import gate, so
+  // nothing can be red in the table yet still importable (or the other way round).
   const allErrors = useMemo(() => {
     const merged = new Map(scheduleErrors)
     const addTo = (key: string, message: string) => merged.set(key, [...(merged.get(key) ?? []), message])
@@ -195,14 +213,23 @@ function PayoutImportModal({ initialMonth, initialDeskId, onClose, onDone }: {
   const readiness = useMemo(() => payoutImportReadiness(parts, allErrors), [parts, allErrors])
 
   const total = parts.reduce((s, p) => s + p.amount, 0)
-  const unmatched = parts.filter((p) => !p.employee).length
-  const fallback = parts.filter((p) => !p.blockReason && p.dateSource === 'WINDOW').length
   const balanceLoading = !!deskId && (available === undefined || cashEvents === undefined)
   const insufficientFunds = !!deskId && available !== undefined && total > available + 0.001
   const invalidTimeRange = !normalizePayoutTime(timeFrom) || !normalizePayoutTime(timeTo) || timeFrom > timeTo
 
   // Rule 3: nothing is sent until EVERY row has a datum, an ura, a Zadeva and no errors.
   const cannotCreate = busy || balanceLoading || invalidTimeRange || !deskId || !readiness.canImport
+
+  // How many parts belong to each source row — used for the "2/3" badge so split
+  // akontacije read as one thing instead of three unrelated rows.
+  const partsPerRow = useMemo(() => {
+    const counts = new Map<number, number>()
+    for (const p of parts) counts.set(p.sourceRow, (counts.get(p.sourceRow) ?? 0) + 1)
+    return counts
+  }, [parts])
+
+  const visibleParts = onlyProblems ? parts.filter((p) => (allErrors.get(p.partKey) ?? []).length > 0) : parts
+  const deskName = locations.find((d) => d.id === deskId)?.name ?? ''
 
   function editPart(partKey: string, patch: PartEdit) {
     setPartEdits((prev) => ({ ...prev, [partKey]: { ...prev[partKey], ...patch } }))
@@ -225,10 +252,13 @@ function PayoutImportModal({ initialMonth, initialDeskId, onClose, onDone }: {
       setPartEdits({})
       setSource(rows)
       setFileName(file.name)
+      setSetupOpen(false)
+      setOnlyProblems(false)
     } catch (e: any) {
       setSource([])
       setFileName('')
       setPartEdits({})
+      setSetupOpen(true)
       setErr(String(e?.message ?? e))
     }
   }
@@ -239,8 +269,8 @@ function PayoutImportModal({ initialMonth, initialDeskId, onClose, onDone }: {
     if (!parts.length) { setErr('Najprej izberite Excel/CSV datoteko.'); return }
     if (invalidTimeRange) { setErr('Čas od mora biti enak ali pred časom do.'); return }
     if (!readiness.canImport) {
-      const rows = readiness.blockedRows.join(', ')
-      setErr(`Uvoz ni mogoč: ${readiness.blocked} od ${readiness.total} izdatkov še ni pripravljenih (vrstice ${rows}). Vsak izdatek mora imeti datum, uro in Zadevo ter biti brez napak.`)
+      setOnlyProblems(true)
+      setErr(`Uvoz ni mogoč: ${readiness.blocked} od ${readiness.total} izdatkov še ni pripravljenih (vrstice ${readiness.blockedRows.join(', ')}). Vsak izdatek mora imeti datum, uro in Zadevo ter biti brez napak.`)
       return
     }
 
@@ -259,6 +289,7 @@ function PayoutImportModal({ initialMonth, initialDeskId, onClose, onDone }: {
     const freshContext = { currentBalance: currentAvailable, events: buildCashEvents(freshDocs, freshTransfers, deskId) }
     const freshErrors = validatePayoutSchedule(parts, win, timeFrom, timeTo, freshContext, potrdila)
     if (!payoutImportReadiness(parts, freshErrors).canImport) {
+      setOnlyProblems(true)
       setErr('Stanje blagajne se je med pripravo uvoza spremenilo. Razpored ni več varen; preverite označene datume in ure.')
       return
     }
@@ -297,120 +328,204 @@ function PayoutImportModal({ initialMonth, initialDeskId, onClose, onDone }: {
     } finally { setBusy(false) }
   }
 
+  const statusTone = !parts.length ? 'idle' : readiness.canImport ? 'ok' : 'bad'
+  const statusClasses = statusTone === 'ok'
+    ? 'border-emerald-200 bg-emerald-50'
+    : statusTone === 'bad' ? 'border-red-200 bg-red-50' : 'border-slate-200 bg-slate-50'
+
   return (
     <Modal
-      title="Uvoz akontacij iz Excel-a / CSV"
+      title="Uvoz akontacij"
       wide
       onClose={onClose}
       footer={<>
         <Btn onClick={onClose}>Prekliči</Btn>
         <div className="flex-1" />
-        {parts.length > 0 && (
-          <span className={`mr-3 text-[12px] font-semibold ${readiness.canImport ? 'text-emerald-700' : 'text-red-700'}`}>
-            {readiness.canImport
-              ? `${readiness.ready} / ${readiness.total} pripravljenih`
-              : `${readiness.blocked} od ${readiness.total} še ni pripravljenih`}
+        {parts.length > 0 && !readiness.canImport && (
+          <span className="mr-3 text-[12px] font-medium text-red-700">
+            {readiness.blocked} {readiness.blocked === 1 ? 'izdatek' : readiness.blocked === 2 ? 'izdatka' : 'izdatkov'} za popravek
           </span>
         )}
-        <Btn kind="primary" disabled={cannotCreate} onClick={save}>Ustvari {parts.length || ''} BI dokumentov</Btn>
+        <Btn kind="primary" disabled={cannotCreate} onClick={save}>
+          {parts.length ? `Ustvari ${parts.length} BI` : 'Ustvari BI'}
+        </Btn>
       </>}
     >
       {err && <div className="mb-3"><ErrBox>{err}</ErrBox></div>}
-      <div className="mb-3 rounded-lg border border-blu-200 bg-blu-50 px-3 py-2 text-[12px] text-blu-900">
-        <b>To je ločen uvoz akontacij.</b> Razpored upošteva dejansko zgodovino denarja v izbrani blagajni, meje dopust listov, delovne dni ter najmanj {MIN_GAP_WORKDAYS} <b>delovnih dni</b> med razdeljenimi izdatki. Uvoz je mogoč samo, ko so <b>vsi</b> izdatki pripravljeni.
-      </div>
-      <div className="grid md:grid-cols-5 gap-3">
-        <Field label="Obdobje" hint={`Razpored ${formatSloDate(win.start)}–${formatSloDate(win.end)}.`}><input type="month" className={inputCls} value={month} onChange={(e) => e.target.value && setMonth(e.target.value)} /></Field>
-        <Field label="Interna blagajna / lokacija"><select className={inputCls} value={deskId} onChange={(e) => setDeskId(e.target.value)}><option value="">— izberi —</option>{locations.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}</select></Field>
-        <Field label="Privzeta zadeva" hint="Vsak izdatek jo lahko spodaj ročno spremeni."><input className={inputCls} value={defaultSubject} onChange={(e) => setDefaultSubject(e.target.value)} /></Field>
-        <Field label="Čas od" hint="Najzgodnejša ura izdatka."><input type="time" className={inputCls} value={timeFrom} onChange={(e) => setTimeFrom(e.target.value)} /></Field>
-        <Field label="Čas do" hint="Najpoznejša ura izdatka."><input type="time" className={inputCls} value={timeTo} onChange={(e) => setTimeTo(e.target.value)} /></Field>
-      </div>
-      {invalidTimeRange && <div className="mt-2"><ErrBox>Čas od mora biti enak ali pred časom do.</ErrBox></div>}
 
-      <div className="mt-3 flex flex-wrap items-center gap-2">
-        <label className="inline-flex cursor-pointer items-center rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium hover:bg-slate-50">⇧ Izberi akontacije Excel (.xlsx) / CSV<input type="file" className="hidden" accept=".xlsx,.csv,text/csv" onChange={(e) => { void load(e.target.files?.[0] ?? null); e.currentTarget.value = '' }} /></label>
-        {fileName && <Chip tone="blue">{fileName}</Chip>}
-        <Chip>{source.length} izvornih vrstic</Chip>
-        <Chip tone="blue">{parts.length} izdatkov · {fmtEur(total)}</Chip>
-        {parts.length > 0 && <Chip tone="green">{readiness.ready} pripravljenih</Chip>}
-        {readiness.blocked > 0 && <Chip tone="red">{readiness.blocked} za popravek</Chip>}
-        {deskId && available !== undefined && <Chip tone={insufficientFunds ? 'red' : 'blue'}>trenutno v blagajni {fmtEur(available)}</Chip>}
-      </div>
-
-      {cashDiagnostics && (cashDiagnostics.transferEvents > 0 || readiness.blocked > 0 || insufficientFunds) && (
-        <div className="mt-2 flex flex-wrap gap-2 items-center text-[12px]">
-          <span className="font-semibold text-slate-500">Diagnostika blagajne:</span>
-          <Chip>stanje {formatSloDate(win.start)}: {fmtEur(cashDiagnostics.startBalance)}</Chip>
-          <Chip tone={cashDiagnostics.spendableInWindow < total ? 'red' : 'green'}>za izdatke na voljo {fmtEur(cashDiagnostics.spendableInWindow)}</Chip>
-          {cashDiagnostics.transferIn > 0 && <Chip tone="green">interni prenosi prejeto: + {fmtEur(cashDiagnostics.transferIn)}</Chip>}
-          {cashDiagnostics.transferOut > 0 && <Chip tone="red">interni prenosi oddano: − {fmtEur(cashDiagnostics.transferOut)}</Chip>}
-          <span className="text-slate-400">{cashDiagnostics.transferEvents} internih prenosov v oknu</span>
+      {/* ---------- 1 · setup: expanded until a file is loaded, then a single line ---------- */}
+      {setupOpen ? (
+        <div className="rounded-lg border border-slate-200 bg-slate-50/60 p-3">
+          <div className="grid gap-3 md:grid-cols-5">
+            <Field label="Obdobje" hint={`${formatSloDate(win.start)}–${formatSloDate(win.end)}`}>
+              <input type="month" className={inputCls} value={month} onChange={(e) => e.target.value && setMonth(e.target.value)} />
+            </Field>
+            <Field label="Blagajna">
+              <select className={inputCls} value={deskId} onChange={(e) => setDeskId(e.target.value)}>
+                <option value="">— izberi —</option>
+                {locations.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+              </select>
+            </Field>
+            <Field label="Privzeta zadeva" hint="Po vrsticah spremenljiva.">
+              <input className={inputCls} value={defaultSubject} onChange={(e) => setDefaultSubject(e.target.value)} />
+            </Field>
+            <Field label="Čas od"><input type="time" className={inputCls} value={timeFrom} onChange={(e) => setTimeFrom(e.target.value)} /></Field>
+            <Field label="Čas do"><input type="time" className={inputCls} value={timeTo} onChange={(e) => setTimeTo(e.target.value)} /></Field>
+          </div>
+          {invalidTimeRange && <div className="mt-2"><ErrBox>Čas od mora biti enak ali pred časom do.</ErrBox></div>}
+          <div className="mt-3 flex flex-wrap items-center gap-3">
+            <label className="inline-flex cursor-pointer items-center rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium hover:bg-slate-50">
+              ⇧ Izberi Excel (.xlsx) ali CSV
+              <input type="file" className="hidden" accept=".xlsx,.csv,text/csv" onChange={(e) => { void load(e.target.files?.[0] ?? null); e.currentTarget.value = '' }} />
+            </label>
+            <span className="text-[12px] text-slate-500">
+              {fileName ? <><b className="text-slate-700">{fileName}</b> · {source.length} vrstic</> : <>Stolpci: <b>Ime</b>, <b>Priimek</b>, <b>Znesek</b>.</>}
+            </span>
+            {!!parts.length && (
+              <button type="button" className="ml-auto text-[12px] font-medium text-blu-700 underline hover:text-blu-900" onClick={() => setSetupOpen(false)}>
+                Skrij nastavitve
+              </button>
+            )}
+          </div>
+        </div>
+      ) : (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-slate-200 bg-slate-50/60 px-3 py-2 text-[12px] text-slate-600">
+          <b className="text-slate-800">{fileName}</b>
+          <span className="text-slate-300">|</span>
+          <span>{deskName}</span>
+          <span className="text-slate-300">|</span>
+          <span className="font-mono">{formatSloDate(win.start)}–{formatSloDate(win.end)}</span>
+          <span className="text-slate-300">|</span>
+          <span className="font-mono">{timeFrom}–{timeTo}</span>
+          <span className="text-slate-300">|</span>
+          <span>{defaultSubject}</span>
+          <button type="button" className="ml-auto font-medium text-blu-700 underline hover:text-blu-900" onClick={() => setSetupOpen(true)}>
+            Spremeni
+          </button>
         </div>
       )}
 
-      <div className="mt-3"><Warn>
-        Vsak izdatek mora imeti <b>datum, uro in Zadevo</b>, datum in ura pa morata biti <b>znotraj dopust lista zaposlenega</b>. Sobote, nedelje in slovenski dela prosti prazniki se preskočijo. Če je en znesek razdeljen na več izdatkov, je med njimi najmanj <b>{MIN_GAP_WORKDAYS} delovnih dni</b>. Stanje blagajne ne sme nikoli pasti pod 0 € — ne na posamezen dan ne skupno. Kjer samodejni razpored ni našel veljavnega termina, sta datum in ura <b>prazna</b>, Zadeva pa je prepuščena vam.
-      </Warn></div>
+      {/* ---------- 2 · one status bar, replacing four overlapping banners ---------- */}
+      <div className={`mt-3 flex flex-wrap items-center gap-x-5 gap-y-3 rounded-lg border px-3 py-2.5 ${statusClasses}`}>
+        <div className="flex items-center gap-2.5">
+          <span className={`text-lg leading-none ${statusTone === 'ok' ? 'text-emerald-600' : statusTone === 'bad' ? 'text-red-600' : 'text-slate-400'}`}>
+            {statusTone === 'ok' ? '✓' : statusTone === 'bad' ? '⚠' : '·'}
+          </span>
+          <div className="leading-tight">
+            <div className={`text-[13px] font-semibold ${statusTone === 'ok' ? 'text-emerald-800' : statusTone === 'bad' ? 'text-red-800' : 'text-slate-600'}`}>
+              {!parts.length ? 'Izberite datoteko'
+                : readiness.canImport ? 'Vse pripravljeno za uvoz'
+                : `${readiness.blocked} od ${readiness.total} izdatkov za popravek`}
+            </div>
+            {!!parts.length && (
+              <div className="text-[11.5px] text-slate-500">
+                {readiness.canImport
+                  ? 'Vsak izdatek ima datum, uro in Zadevo.'
+                  : `Vrstice ${readiness.blockedRows.join(', ')} — dopolnite jih spodaj.`}
+              </div>
+            )}
+          </div>
+        </div>
 
-      {readiness.blocked > 0 && (
-        <div className="mt-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-[12px] text-red-900">
-          <div className="font-semibold">Uvoz je zaklenjen, dokler ni urejenih {readiness.blocked} izdatkov (vrstice {readiness.blockedRows.join(', ')}).</div>
-          <ul className="mt-1 list-disc pl-5">
-            {readiness.reasons.slice(0, 6).map((r) => (
-              <li key={r.partKey}>
-                <b>vrstica {r.sourceRow}</b> · {r.employeeName} — {r.messages[0]}
-              </li>
-            ))}
+        {!!parts.length && (
+          <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
+            <Stat label="izdatkov" value={String(parts.length)} />
+            <Stat label="skupaj" value={fmtEur(total)} tone={insufficientFunds ? 'bad' : undefined} />
+            {available !== undefined && <Stat label="v blagajni" value={fmtEur(available)} tone={insufficientFunds ? 'bad' : undefined} />}
+            {cashDiagnostics && (
+              <Stat
+                label="za izdatke na voljo"
+                value={fmtEur(cashDiagnostics.spendableInWindow)}
+                tone={cashDiagnostics.spendableInWindow + 0.001 < total ? 'bad' : 'ok'}
+              />
+            )}
+          </div>
+        )}
+
+        <div className="ml-auto flex items-center gap-2">
+          {readiness.blocked > 0 && (
+            <button
+              type="button"
+              className={`rounded-md border px-2.5 py-1 text-[12px] font-medium ${onlyProblems ? 'border-red-300 bg-red-100 text-red-800' : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'}`}
+              onClick={() => setOnlyProblems((v) => !v)}
+            >
+              {onlyProblems ? `Pokaži vse (${parts.length})` : `Samo za popravek (${readiness.blocked})`}
+            </button>
+          )}
+          <button
+            type="button"
+            className="rounded-md border border-slate-300 bg-white px-2.5 py-1 text-[12px] font-medium text-slate-700 hover:bg-slate-50"
+            onClick={() => setRulesOpen((v) => !v)}
+          >
+            Pravila {rulesOpen ? '▴' : '▾'}
+          </button>
+        </div>
+      </div>
+
+      {/* ---------- 3 · the long explanation, on demand only ---------- */}
+      {rulesOpen && (
+        <div className="mt-2 rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-[12px] leading-relaxed text-slate-600">
+          <ul className="list-disc space-y-1 pl-4">
+            <li>Vsak izdatek mora imeti <b>datum, uro in Zadevo</b>; datum in ura morata biti <b>znotraj dopust lista</b> zaposlenega.</li>
+            <li>Sobote, nedelje in slovenski dela prosti prazniki se preskočijo.</li>
+            <li>Znesek nad <b>{SPLIT_THRESHOLD_EUR} €</b> se razdeli; med deli je najmanj <b>{MIN_GAP_WORKDAYS} delovnih dni</b>.</li>
+            <li>Stanje blagajne ne sme <b>nikoli</b> pasti pod 0 € — ne ob posameznem izdatku ne skupno. Upoštevani so tudi interni prenosi.</li>
+            <li>Kjer samodejni razpored ni našel veljavnega termina, sta datum in ura <b>prazna</b>, Zadevo pa vpišete sami. Uvoz je zaklenjen, dokler ni urejena <b>vsaka</b> vrstica.</li>
           </ul>
-          {readiness.reasons.length > 6 && <div className="mt-1 text-red-700">… in še {readiness.reasons.length - 6}. Podrobnosti so v tabeli.</div>}
+          {cashDiagnostics && cashDiagnostics.transferEvents > 0 && (
+            <div className="mt-2 border-t border-slate-100 pt-2 font-mono text-[11.5px] text-slate-500">
+              stanje {formatSloDate(win.start)}: {fmtEur(cashDiagnostics.startBalance)}
+              {cashDiagnostics.transferIn > 0 && <> · prenosi prejeto +{fmtEur(cashDiagnostics.transferIn)}</>}
+              {cashDiagnostics.transferOut > 0 && <> · prenosi oddano −{fmtEur(cashDiagnostics.transferOut)}</>}
+              <> · {cashDiagnostics.transferEvents} internih prenosov v oknu</>
+            </div>
+          )}
         </div>
       )}
 
-      {(unmatched > 0 || fallback > 0 || insufficientFunds) && (
-        <div className="mt-2 flex gap-2 flex-wrap">
-          {unmatched > 0 && <Chip tone="red">{unmatched} brez ujemanja zaposlenega</Chip>}
-          {fallback > 0 && <Chip tone="amber">{fallback} datumov znotraj dopust lista, vendar ne na njegovi meji</Chip>}
-          {insufficientFunds && available !== undefined && <Chip tone="red">Premalo sredstev: manjka {fmtEur(total - available)}</Chip>}
-        </div>
-      )}
-      {insufficientFunds && available !== undefined && <div className="mt-2"><ErrBox>Uvoz vsebuje {fmtEur(total)}, v izbrani blagajni pa je trenutno na voljo samo {fmtEur(available)}. Pri stanju so upoštevani tudi interni prenosi. Stanje po uvozu ne sme biti negativno.</ErrBox></div>}
-
-      <div className="mt-3 max-h-[480px] overflow-auto rounded-lg border border-slate-200">
-        <table className="w-full min-w-[1360px] text-sm">
-          <thead className="sticky top-0 z-10 bg-slate-50 text-[11px] uppercase text-slate-500">
+      {/* ---------- 4 · the table gets the room ---------- */}
+      <div className="mt-3 max-h-[520px] overflow-auto rounded-lg border border-slate-200">
+        <table className="w-full min-w-[1040px] text-sm">
+          <thead className="sticky top-0 z-10 bg-slate-50 text-[10px] uppercase tracking-wider text-slate-500">
             <tr>
-              <th className="px-2 py-2 text-left w-14">Stanje</th>
-              <th className="px-2 py-2 text-left w-20">Vrstica</th>
-              <th className="px-2 py-2 text-left min-w-[200px]">Zaposleni</th>
-              <th className="px-2 py-2 text-right w-28">Izvorno</th>
-              <th className="px-2 py-2 text-right w-28">Znesek</th>
-              <th className="px-2 py-2 text-left w-40">Datum</th>
-              <th className="px-2 py-2 text-left w-28">Ura</th>
-              <th className="px-2 py-2 text-left min-w-[220px]">Zadeva</th>
-              <th className="px-2 py-2 text-left min-w-[300px]">Vir / opozorilo</th>
+              <th className="w-9 px-2 py-2"></th>
+              <th className="min-w-[210px] px-2 py-2 text-left">Zaposleni</th>
+              <th className="w-28 px-2 py-2 text-right">Znesek</th>
+              <th className="w-36 px-2 py-2 text-left">Datum</th>
+              <th className="w-24 px-2 py-2 text-left">Ura</th>
+              <th className="min-w-[170px] px-2 py-2 text-left">Zadeva</th>
+              <th className="min-w-[300px] px-2 py-2 text-left">Opombe</th>
             </tr>
           </thead>
           <tbody>
-            {parts.map((p) => {
+            {visibleParts.map((p) => {
               const rowErrors = allErrors.get(p.partKey) ?? []
               const edit = partEdits[p.partKey]
               const dateText = edit?.dateText ?? (p.date ? formatSloDate(p.date) : '')
               const timeText = edit?.time ?? p.time
-              const ready = rowErrors.length === 0
+              const ok = rowErrors.length === 0
               const needsUser = !!p.blockReason
+              const siblings = partsPerRow.get(p.sourceRow) ?? 1
+              const partNo = Number(p.partKey.split('-')[1]) + 1
               return (
-                <tr key={p.partKey} className={`border-t border-slate-100 ${ready ? '' : needsUser ? 'bg-amber-50/80' : 'bg-red-50/60'}`}>
-                  <td className="px-2 py-1 text-center text-base" title={ready ? 'Pripravljeno za uvoz' : 'Zahteva vašo pozornost'}>
-                    {ready ? <span className="text-emerald-600">✓</span> : <span className="text-red-600">⚠</span>}
+                <tr key={p.partKey} className={`border-t border-slate-100 ${ok ? '' : needsUser ? 'bg-amber-50/70' : 'bg-red-50/60'}`}>
+                  <td className="px-2 py-1.5 text-center align-top text-base leading-5" title={ok ? 'Pripravljeno' : 'Zahteva vašo pozornost'}>
+                    {ok ? <span className="text-emerald-600">✓</span> : <span className="text-red-600">⚠</span>}
                   </td>
-                  <td className="px-2 py-1 font-mono">{p.sourceRow}</td>
-                  <td className="px-2 py-1">{p.employee ? p.employee.displayName : <span className="text-red-700 font-medium">{p.employeeName} — ni najden</span>}</td>
-                  <td className="px-2 py-1 text-right font-mono">{fmtEur(p.originalAmount)}</td>
-                  <td className="px-2 py-1 text-right font-mono font-semibold">{fmtEur(p.amount)}</td>
-                  <td className="px-2 py-1">
+                  <td className="px-2 py-1.5 align-top">
+                    <div className="font-medium">
+                      {p.employee ? p.employee.displayName : <span className="text-red-700">{p.employeeName} — ni najden</span>}
+                      {siblings > 1 && <span className="ml-1.5 rounded bg-slate-200 px-1 py-0.5 font-mono text-[10px] text-slate-600">{partNo}/{siblings}</span>}
+                    </div>
+                    <div className="font-mono text-[10.5px] text-slate-400">
+                      vr. {p.sourceRow}
+                      {siblings > 1 && <> · iz {fmtEur(p.originalAmount)}</>}
+                    </div>
+                  </td>
+                  <td className="px-2 py-1.5 text-right align-top font-mono font-semibold tabular-nums">{fmtEur(p.amount)}</td>
+                  <td className="px-2 py-1.5 align-top">
                     <input
-                      className={`${inputCls} font-mono min-w-[130px] ${rowErrors.some((x) => x.startsWith('Datum')) || (needsUser && !p.date) ? 'border-red-400 bg-red-50' : ''}`}
+                      className={`${inputCls} min-w-[118px] font-mono ${rowErrors.some((x) => x.startsWith('Datum')) || (needsUser && !p.date) ? 'border-red-400 bg-red-50' : ''}`}
                       value={dateText}
                       placeholder="DD.MM.YYYY"
                       onChange={(e) => editPart(p.partKey, { dateText: e.target.value })}
@@ -419,10 +534,11 @@ function PayoutImportModal({ initialMonth, initialDeskId, onClose, onDone }: {
                         if (parsed) editPart(p.partKey, { dateText: formatSloDate(parsed) })
                       }}
                     />
+                    <div className="mt-0.5 pl-0.5 text-[10.5px] text-slate-400">{sourceLabel(p)}</div>
                   </td>
-                  <td className="px-2 py-1">
+                  <td className="px-2 py-1.5 align-top">
                     <input
-                      className={`${inputCls} font-mono min-w-[90px] ${rowErrors.some((x) => x.startsWith('Ura')) || (needsUser && !p.time) ? 'border-red-400 bg-red-50' : ''}`}
+                      className={`${inputCls} min-w-[74px] font-mono ${rowErrors.some((x) => x.startsWith('Ura')) || (needsUser && !p.time) ? 'border-red-400 bg-red-50' : ''}`}
                       value={timeText}
                       placeholder="HH:MM"
                       onChange={(e) => editPart(p.partKey, { time: e.target.value })}
@@ -432,27 +548,25 @@ function PayoutImportModal({ initialMonth, initialDeskId, onClose, onDone }: {
                       }}
                     />
                   </td>
-                  <td className="px-2 py-1">
+                  <td className="px-2 py-1.5 align-top">
                     <input
-                      className={`${inputCls} min-w-[210px] ${rowErrors.some((x) => x.startsWith('Zadeva')) ? 'border-red-400 bg-red-50' : ''}`}
+                      className={`${inputCls} min-w-[160px] ${rowErrors.some((x) => x.startsWith('Zadeva')) ? 'border-red-400 bg-red-50' : ''}`}
                       value={p.subject}
                       placeholder="Zadeva (obvezno)"
                       onChange={(e) => editPart(p.partKey, { subject: e.target.value })}
                     />
                   </td>
-                  <td className="px-2 py-1 text-[12px]">
-                    <div className="font-medium text-slate-600">{sourceLabel(p)}</div>
-                    {p.warning && <div className="text-amber-700">{p.warning}</div>}
-                    {p.blockReason && <div className="text-amber-900 font-semibold">⚠ Ročno dopolnite: {p.blockReason}</div>}
-                    {p.cashAvailable !== undefined && p.cashAt && (
-                      <div className="text-red-700 font-medium">
-                        Najboljši veljavni termin: {formatSloDate(p.cashAt.slice(0, 10))} {p.cashAt.slice(11, 16)} · na voljo {fmtEur(p.cashAvailable)} · izdatek {fmtEur(p.amount)} · manjka {fmtEur(Math.max(0, p.amount - p.cashAvailable))}
-                      </div>
-                    )}
-                    {rowErrors.filter((message) => message !== p.blockReason).map((message, index) => <div key={index} className="text-red-700 font-medium">{message}</div>)}
+                  <td className="px-2 py-1.5 align-top text-[11.5px] leading-snug">
+                    {p.blockReason && <div className="font-medium text-amber-900">{p.blockReason}</div>}
+                    {rowErrors.filter((m) => m !== p.blockReason).map((m, i) => <div key={i} className="font-medium text-red-700">{m}</div>)}
+                    {/* SPLIT is already shown by the "2/3" badge and "iz <amount>";
+                        UNMATCHED_EMPLOYEE by the red name. Only show the rest. */}
+                    {p.warnings
+                      .filter((w) => w.code !== 'SPLIT' && w.code !== 'UNMATCHED_EMPLOYEE')
+                      .map((w, i) => <div key={i} className="text-slate-400">{w.message}</div>)}
                     {edit && (
-                      <button type="button" className="mt-1 text-[11px] text-slate-500 underline hover:text-slate-800" onClick={() => resetPart(p.partKey)}>
-                        povrni samodejni predlog
+                      <button type="button" className="mt-0.5 text-[11px] text-slate-500 underline hover:text-slate-800" onClick={() => resetPart(p.partKey)}>
+                        povrni predlog
                       </button>
                     )}
                   </td>
@@ -461,7 +575,14 @@ function PayoutImportModal({ initialMonth, initialDeskId, onClose, onDone }: {
             })}
           </tbody>
         </table>
-        {!parts.length && <div className="p-8 text-center text-slate-400">Izberite datoteko. Pričakovani stolpci: <b>Ime</b>, <b>Priimek</b>, <b>Znesek/Vrednost</b>.</div>}
+        {!parts.length && (
+          <div className="p-10 text-center text-slate-400">
+            Izberite Excel ali CSV datoteko. Pričakovani stolpci: <b>Ime</b>, <b>Priimek</b>, <b>Znesek</b>.
+          </div>
+        )}
+        {!!parts.length && !visibleParts.length && (
+          <div className="p-8 text-center text-slate-400">Ni vrstic za popravek.</div>
+        )}
       </div>
     </Modal>
   )
@@ -469,3 +590,4 @@ function PayoutImportModal({ initialMonth, initialDeskId, onClose, onDone }: {
 
 export { PayoutImportModal }
 export default PayoutImportModal
+

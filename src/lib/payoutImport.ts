@@ -41,6 +41,18 @@ export interface PayoutSourceRow {
 
 export type PayoutDateSource = 'POTRDILO_START' | 'POTRDILO_END' | 'WINDOW' | 'MANUAL'
 
+/**
+ * Why a part carries a note. Coded rather than matched on text, so a UI can drop
+ * the ones it already shows another way — e.g. SPLIT is redundant next to a
+ * "2/3" badge, and UNMATCHED_EMPLOYEE next to a red employee name.
+ */
+export type PayoutWarningCode = 'UNMATCHED_EMPLOYEE' | 'SPLIT' | 'DATE_MOVED'
+
+export interface PayoutWarning {
+  code: PayoutWarningCode
+  message: string
+}
+
 export interface PayoutPart {
   partKey: string
   sourceRow: number
@@ -56,7 +68,9 @@ export interface PayoutPart {
   subject: string
   dateSource: PayoutDateSource
   potrdiloId: string | null
-  /** Informational note, does not block the import. */
+  /** Informational notes, coded. Do not block the import. */
+  warnings: PayoutWarning[]
+  /** All `warnings` joined with " · ". Kept so existing callers keep working. */
   warning?: string
   /**
    * Set when this part cannot be imported as it stands: no legal date/time was
@@ -858,7 +872,7 @@ interface RowPlan {
   employeeName: string
   amounts: number[]
   isSplit: boolean
-  warnings: string[]
+  warnings: PayoutWarning[]
   items: ItemPlan[]
   /** Structural problem (no certificate, period too short, ...) — nothing to schedule. */
   blockReason: string | null
@@ -899,10 +913,13 @@ function planRows(
       ? potrdila.filter((p) => p.employeeId === employee.id && p.toAt.slice(0, 10) >= win.start && p.fromAt.slice(0, 10) <= win.end)
       : []
 
-    const warnings: string[] = []
-    if (!employee) warnings.push('Zaposleni ni enolično najden')
+    const warnings: PayoutWarning[] = []
+    if (!employee) warnings.push({ code: 'UNMATCHED_EMPLOYEE', message: 'Zaposleni ni enolično najden' })
     if (split.split) {
-      warnings.push(`Znesek nad ${SPLIT_THRESHOLD_EUR} € je razdeljen na ${delAcc(split.parts.length)} po ${SPLIT_MIN_EUR}–${SPLIT_MAX_EUR} €; med njimi je najmanj ${delovniDan(minGap)}.`)
+      warnings.push({
+        code: 'SPLIT',
+        message: `Znesek nad ${SPLIT_THRESHOLD_EUR} € je razdeljen na ${delAcc(split.parts.length)} po ${SPLIT_MIN_EUR}–${SPLIT_MAX_EUR} €; med njimi je najmanj ${delovniDan(minGap)}.`,
+      })
     }
 
     const base: Omit<RowPlan, 'items' | 'blockReason' | 'earliestSlotAt'> = {
@@ -1100,7 +1117,8 @@ export function buildPayoutParts(
         employeeName: plan.employeeName,
         originalAmount: plan.row.amount,
         amount,
-        warning: plan.warnings.join(' · ') || undefined,
+        warnings: plan.warnings,
+        warning: plan.warnings.map((w) => w.message).join(' · ') || undefined,
       }
 
       if (plan.blockReason) {
@@ -1142,11 +1160,15 @@ export function buildPayoutParts(
       const placement = chosen.placements.get(partKey)!
       const warnings = [...plan.warnings]
       if (placement.slot.source === 'WINDOW' && plan.items[i].slots.some((s) => s.source !== 'WINDOW')) {
-        warnings.push(`Datum je premaknjen z meje dopust lista zaradi razmika ${delovniDan(minGap)} ali stanja blagajne.`)
+        warnings.push({
+          code: 'DATE_MOVED',
+          message: `Datum je premaknjen z meje dopust lista zaradi razmika ${delovniDan(minGap)} ali stanja blagajne.`,
+        })
       }
       out.push({
         ...base,
-        warning: warnings.join(' · ') || undefined,
+        warnings,
+        warning: warnings.map((w) => w.message).join(' · ') || undefined,
         date: placement.slot.date,
         time: placement.slot.time,
         subject: defaultSubject,
