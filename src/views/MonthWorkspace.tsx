@@ -5,7 +5,7 @@ import { EmployeeEdit } from './Employees'
 import type { CashDesk, CashDocument, CashTransfer, DocType } from '../types'
 import { PREJEL_LABELS } from '../types'
 import { cx, docNo, fmtDate, fmtDateTime, fmtEur, monthLabel, nDokumentovIma, nowIso, nowTime, parseAmount, todayIso, currentMonthKey, uuid } from '../lib/util'
-import { closeIdFor, docProblems, sortChrono } from '../lib/numbering'
+import { closeIdFor, docProblems } from '../lib/numbering'
 import { availableInDesk, balanceInfo, checkBiCover } from '../lib/balance'
 import { can } from '../lib/perms'
 import { Btn, Chip, Modal, Warn, inputCls } from '../components/ui'
@@ -17,13 +17,15 @@ import { childDesks, locationIdsForView, physicalDesks } from '../lib/desks'
 import { PayoutImportModal } from './PayoutImport'
 import { InternalTransferModal } from './InternalTransfer'
 
+function surnameFirst(name = '') {
+  const parts = name.trim().split(/\s+/).filter(Boolean)
+  if (parts.length <= 1) return parts[0] ?? ''
+  const surname = parts.pop() ?? ''
+  return `${surname} ${parts.join(' ')}`.trim()
+}
+
 function surnameSort(a: { displayName?: string }, b: { displayName?: string }) {
-  const key = (name = '') => {
-    const parts = name.trim().split(/\s+/).filter(Boolean)
-    const surname = parts.pop() ?? ''
-    return `${surname} ${parts.join(' ')}`.trim()
-  }
-  return key(a.displayName).localeCompare(key(b.displayName), 'sl', { sensitivity: 'base' })
+  return surnameFirst(a.displayName).localeCompare(surnameFirst(b.displayName), 'sl', { sensitivity: 'base' })
 }
 
 type AttachmentPreview = {
@@ -143,7 +145,10 @@ export function MonthWorkspace({
           (d.officialNumber != null && String(d.officialNumber).includes(q))
         )
       })
-      .sort(sortChrono)
+      .sort((a, b) => {
+        const dateTime = `${b.transactionDate}T${b.transactionTime}`.localeCompare(`${a.transactionDate}T${a.transactionTime}`)
+        return dateTime || b.createdAt.localeCompare(a.createdAt)
+      })
   }, [docsAll, viewDeskId, desks, fltType, fltEmp, search])
 
   const deskDocs = useMemo(() => docsAll.filter((d) => viewLocationSet.has(d.deskId)), [docsAll, viewDeskId, desks])
@@ -339,7 +344,7 @@ export function MonthWorkspace({
   const actionDeskName = desks.find((x) => x.id === actionDeskId)?.name ?? '—'
 
   return (
-    <div>
+    <div className="relative left-1/2 w-[90vw] max-w-none -translate-x-1/2">
       {/* Vrstica z izbirami */}
       <div className="flex flex-wrap items-center gap-2">
         <div className="flex items-center rounded-lg border border-slate-300 bg-white overflow-hidden">
@@ -486,7 +491,7 @@ export function MonthWorkspace({
         </select>
         <select className={cx(inputCls, 'w-auto')} value={fltEmp} onChange={(e) => setFltEmp(e.target.value)}>
           <option value="">Vsi zaposleni</option>
-          {[...employees].sort(surnameSort).map((e) => <option key={e.id} value={e.id}>{e.displayName}</option>)}
+          {[...employees].sort(surnameSort).map((e) => <option key={e.id} value={e.id}>{surnameFirst(e.displayName)}</option>)}
         </select>
         <input className={cx(inputCls, 'w-56')} placeholder="Išči (namen, zaposleni, znesek, št.)" value={search} onChange={(e) => setSearch(e.target.value)} />
         <div className="flex-1" />
@@ -503,21 +508,21 @@ export function MonthWorkspace({
       </div>
 
       {/* Tabela */}
-      <div className="mt-3 h-[520px] overflow-auto overscroll-contain rounded-lg border border-slate-200 bg-white">
-        <table className="w-full text-sm min-w-[1100px]">
+      <div className="mt-3 h-[520px] w-full overflow-auto overscroll-contain rounded-lg border border-slate-200 bg-white">
+        <table className="w-full text-sm min-w-[1580px]">
           <thead className="sticky top-0 z-10 bg-slate-50 shadow-sm">
             <tr className="bg-slate-50 text-[11px] uppercase tracking-wide text-slate-500 text-left">
-              <th className="px-2 py-2 w-24">Številka</th>
-              <th className="px-2 py-2 w-32">Datum</th>
-              <th className="px-2 py-2 w-20">Čas</th>
-              <th className="px-2 py-2 w-16">Tip</th>
-              <th className="px-2 py-2 w-36">Blagajna</th>
-              <th className="px-2 py-2 w-44">Zaposleni</th>
-              <th className="px-2 py-2">Za</th>
-              <th className="px-2 py-2 w-28 text-right">Znesek</th>
-              <th className="px-2 py-2 w-20">Konto</th>
-              <th className="px-2 py-2 w-24">Stanje</th>
-              <th className="px-2 py-2 w-32 text-right">Akcije</th>
+              <th className="px-3 py-2 min-w-[110px]">Številka</th>
+              <th className="px-3 py-2 min-w-[165px]">Datum</th>
+              <th className="px-3 py-2 min-w-[135px]">Čas</th>
+              <th className="px-3 py-2 min-w-[80px]">Tip</th>
+              <th className="px-3 py-2 min-w-[150px]">Blagajna</th>
+              <th className="px-3 py-2 min-w-[250px]">Zaposleni</th>
+              <th className="px-3 py-2 min-w-[280px]">Za</th>
+              <th className="px-3 py-2 min-w-[120px] text-right text-emerald-700">+</th>
+              <th className="px-3 py-2 min-w-[120px] text-right text-red-700">−</th>
+              <th className="px-3 py-2 min-w-[170px]">Stanje</th>
+              <th className="px-3 py-2 min-w-[135px] text-right">Akcije</th>
             </tr>
           </thead>
           <tbody>
@@ -572,7 +577,7 @@ export function MonthWorkspace({
                   <td className="px-2 py-1 text-[12px] whitespace-nowrap">
                     {desks.find((x) => x.id === d.deskId)?.name ?? d.deskId}
                   </td>
-                  <td className="px-1 py-0.5">
+                  <td className="px-2 py-0.5 min-w-[250px]">
                     {editable
                       ? <select data-row={d.id} data-col="emp" className={cx(cellCls, !d.employeeId && 'border-red-300')} value={d.employeeId}
                           title="Dvoklik = nov zaposleni"
@@ -584,35 +589,29 @@ export function MonthWorkspace({
                           }}>
                           <option value="">—</option>
                           <option value="__new">➕ Nov zaposleni …</option>
-                          {employees.filter((e) => e.active || e.id === d.employeeId).sort(surnameSort).map((e) => <option key={e.id} value={e.id}>{e.displayName}</option>)}
+                          {employees.filter((e) => e.active || e.id === d.employeeId).sort(surnameSort).map((e) => <option key={e.id} value={e.id}>{surnameFirst(e.displayName)}</option>)}
                         </select>
-                      : <span>{d.employeeName}</span>}
+                      : <span>{surnameFirst(d.employeeName)}</span>}
                   </td>
-                  <td className="px-1 py-0.5">
+                  <td className="px-2 py-0.5 min-w-[280px]">
                     {editable
                       ? <input data-row={d.id} data-col="za" className={cx(cellCls, settings.requirePurpose && !d.purpose.trim() && 'border-red-300')} defaultValue={d.purpose} key={`${d.id}p${d.updatedAt}`} placeholder="namen …"
                           onKeyDown={keyHandler(d, 'za')} onBlur={(e) => e.target.value !== d.purpose && commit(d, { purpose: e.target.value })} />
                       : <span className="text-[13px]">{d.purpose}</span>}
                   </td>
-                  <td className="px-1 py-0.5 text-right">
-                    {editable
-                      ? <input data-row={d.id} data-col="znesek" inputMode="decimal" className={cx(cellCls, 'text-right font-mono', (d.amount == null || d.amount <= 0) && 'border-red-300')} placeholder="0,00"
+                  <td className="px-1 py-0.5 text-right font-mono font-semibold text-emerald-700 whitespace-nowrap">
+                    {d.type === 'BP' && (editable
+                      ? <input data-row={d.id} data-col="znesek" inputMode="decimal" className={cx(cellCls, 'text-right font-mono text-emerald-700 font-semibold', (d.amount == null || d.amount <= 0) && 'border-red-300')} placeholder="0,00"
                           defaultValue={d.amount != null ? String(d.amount).replace('.', ',') : ''} key={`${d.id}a${d.updatedAt}`}
                           onKeyDown={keyHandler(d, 'znesek')} onBlur={(e) => { const v = parseAmount(e.target.value); if (v !== d.amount) commit(d, { amount: v }, 'Sprememba zneska') }} />
-                      : <span className="font-mono">{fmtEur(d.amount)}</span>}
+                      : d.amount != null ? `+ ${fmtEur(d.amount)}` : '')}
                   </td>
-                  <td className="px-1 py-0.5">
-                    {editable
-                      ? <input data-row={d.id} data-col="konto" className={cx(cellCls, 'font-mono')} defaultValue={d.rows[0]?.konto ?? ''} key={`${d.id}k${d.updatedAt}`}
-                          onKeyDown={keyHandler(d, 'konto')} onBlur={(e) => {
-                            const konto = e.target.value
-                            if (konto === (d.rows[0]?.konto ?? '')) return
-                            const rows = d.rows.length > 0
-                              ? d.rows.map((r, i) => (i === 0 ? { ...r, konto } : r))
-                              : konto ? [{ opis: d.purpose, konto, znesek: d.amount }] : []
-                            commit(d, { rows })
-                          }} />
-                      : <span className="font-mono text-[12px]">{d.rows[0]?.konto ?? ''}</span>}
+                  <td className="px-1 py-0.5 text-right font-mono font-semibold text-red-700 whitespace-nowrap">
+                    {d.type === 'BI' && (editable
+                      ? <input data-row={d.id} data-col="znesek" inputMode="decimal" className={cx(cellCls, 'text-right font-mono text-red-700 font-semibold', (d.amount == null || d.amount <= 0) && 'border-red-300')} placeholder="0,00"
+                          defaultValue={d.amount != null ? String(d.amount).replace('.', ',') : ''} key={`${d.id}a${d.updatedAt}`}
+                          onKeyDown={keyHandler(d, 'znesek')} onBlur={(e) => { const v = parseAmount(e.target.value); if (v !== d.amount) commit(d, { amount: v }, 'Sprememba zneska') }} />
+                      : d.amount != null ? `− ${fmtEur(d.amount)}` : '')}
                   </td>
                   <td className="px-2 py-1">
                     <div className="flex flex-col gap-0.5 items-start">

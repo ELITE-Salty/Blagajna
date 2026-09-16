@@ -8,7 +8,10 @@ export interface PayoutSourceRow {
   amount: number
 }
 
+export type PayoutDateSource = 'POTRDILO_START' | 'POTRDILO_END' | 'WINDOW' | 'MANUAL'
+
 export interface PayoutPart {
+  partKey: string
   sourceRow: number
   employee: Employee | null
   employeeName: string
@@ -16,9 +19,26 @@ export interface PayoutPart {
   amount: number
   date: string
   time: string
-  dateSource: 'POTRDILO_START' | 'POTRDILO_END' | 'WINDOW'
+  dateSource: PayoutDateSource
   potrdiloId: string | null
   warning?: string
+  scheduleError?: string
+  skipReason?: string
+  cashAvailable?: number
+  cashAt?: string
+}
+
+export interface CashEvent {
+  at: string
+  delta: number
+  source?: 'DOC' | 'TRANSFER'
+  id?: string
+  label?: string
+}
+
+export interface PayoutScheduleContext {
+  currentBalance: number
+  events: CashEvent[]
 }
 
 const norm = (v: string) => v.trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, ' ').trim()
@@ -342,56 +362,330 @@ function matchEmployee(row: PayoutSourceRow, employees: Employee[]): Employee | 
   return uniqueEmployee(subsetMatches)
 }
 
-function uniqueBounds(bounds: { date: string; source: 'POTRDILO_START' | 'POTRDILO_END'; potrdiloId: string }[]) {
-  const seen = new Set<string>()
-  return bounds.filter((b) => {
-    if (seen.has(b.date)) return false
-    seen.add(b.date)
-    return true
-  })
-}
-
-function spreadWindowDays(days: string[], count: number, seed: number, excluded: Set<string>): string[] {
-  if (count <= 0 || !days.length) return []
-  const available = days.filter((d) => !excluded.has(d))
-  if (!available.length) return []
-  const out: string[] = []
-  const offset = Math.abs(seed) % available.length
-
-  // Pick dates across the full 20th -> 16th window rather than taking
-  // consecutive days. For normal imports, each split piece gets a unique day.
-  for (let i = 0; i < count && out.length < available.length; i++) {
-    const base = Math.floor(((i + 0.5) * available.length) / Math.min(count, available.length))
-    let idx = (base + offset) % available.length
-    let guard = 0
-    while (out.includes(available[idx]) && guard++ < available.length) idx = (idx + 1) % available.length
-    if (!out.includes(available[idx])) out.push(available[idx])
-  }
+function isoDateToUtc(date: string): Date | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date)
+  if (!m) return null
+  const y = Number(m[1]), mo = Number(m[2]), d = Number(m[3])
+  const out = new Date(Date.UTC(y, mo - 1, d))
+  if (out.getUTCFullYear() !== y || out.getUTCMonth() !== mo - 1 || out.getUTCDate() !== d) return null
   return out
 }
 
-function timeToMinutes(value: string, fallback: number): number {
+function utcToIso(d: Date): string {
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`
+}
+
+function addIsoDays(date: string, days: number): string {
+  const d = isoDateToUtc(date)
+  if (!d) return date
+  d.setUTCDate(d.getUTCDate() + days)
+  return utcToIso(d)
+}
+
+function daysBetween(a: string, b: string): number {
+  const da = isoDateToUtc(a), db = isoDateToUtc(b)
+  if (!da || !db) return Number.NaN
+  return Math.round((db.getTime() - da.getTime()) / 86_400_000)
+}
+
+export function formatSloDate(date: string): string {
+  const d = isoDateToUtc(date)
+  if (!d) return date
+  return `${String(d.getUTCDate()).padStart(2, '0')}.${String(d.getUTCMonth() + 1).padStart(2, '0')}.${d.getUTCFullYear()}`
+}
+
+export function parseSloDate(value: string): string | null {
+  const raw = value.trim()
+  if (!raw) return null
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return isoDateToUtc(raw) ? raw : null
+  const m = /^(\d{1,2})\.(\d{1,2})\.(\d{4})\.?$/.exec(raw)
+  if (!m) return null
+  const iso = `${m[3]}-${String(Number(m[2])).padStart(2, '0')}-${String(Number(m[1])).padStart(2, '0')}`
+  return isoDateToUtc(iso) ? iso : null
+}
+
+export function normalizePayoutTime(value: string): string | null {
   const m = /^(\d{1,2}):(\d{2})$/.exec(value.trim())
-  if (!m) return fallback
-  const hour = Number(m[1])
-  const minute = Number(m[2])
-  if (!Number.isInteger(hour) || !Number.isInteger(minute) || hour < 0 || hour > 23 || minute < 0 || minute > 59) return fallback
+  if (!m) return null
+  const hour = Number(m[1]), minute = Number(m[2])
+  if (!Number.isInteger(hour) || !Number.isInteger(minute) || hour < 0 || hour > 23 || minute < 0 || minute > 59) return null
+  return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`
+}
+
+function easterSundayIso(year: number): string {
+  // Meeus/Jones/Butcher Gregorian Easter algorithm.
+  const a = year % 19
+  const b = Math.floor(year / 100)
+  const c = year % 100
+  const d = Math.floor(b / 4)
+  const e = b % 4
+  const f = Math.floor((b + 8) / 25)
+  const g = Math.floor((b - f + 1) / 3)
+  const h = (19 * a + b - d - g + 15) % 30
+  const i = Math.floor(c / 4)
+  const k = c % 4
+  const l = (32 + 2 * e + 2 * i - h - k) % 7
+  const m = Math.floor((a + 11 * h + 22 * l) / 451)
+  const month = Math.floor((h + l - 7 * m + 114) / 31)
+  const day = ((h + l - 7 * m + 114) % 31) + 1
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+}
+
+export function slovenianHolidayName(date: string): string | null {
+  const d = isoDateToUtc(date)
+  if (!d) return null
+  const md = date.slice(5)
+  const fixed: Record<string, string> = {
+    '01-01': 'novo leto',
+    '01-02': 'novo leto',
+    '02-08': 'Prešernov dan',
+    '04-27': 'dan upora proti okupatorju',
+    '05-01': 'praznik dela',
+    '05-02': 'praznik dela',
+    '06-25': 'dan državnosti',
+    '08-15': 'Marijino vnebovzetje',
+    '10-31': 'dan reformacije',
+    '11-01': 'dan spomina na mrtve',
+    '12-25': 'božič',
+    '12-26': 'dan samostojnosti in enotnosti',
+  }
+  if (fixed[md]) return fixed[md]
+  const easterMonday = addIsoDays(easterSundayIso(d.getUTCFullYear()), 1)
+  if (date === easterMonday) return 'velikonočni ponedeljek'
+  return null
+}
+
+export function isSlovenianWorkday(date: string): boolean {
+  const d = isoDateToUtc(date)
+  if (!d) return false
+  const day = d.getUTCDay()
+  return day !== 0 && day !== 6 && !slovenianHolidayName(date)
+}
+
+function timeToMinutes(value: string, fallback: number): number {
+  const normalized = normalizePayoutTime(value)
+  if (!normalized) return fallback
+  const [hour, minute] = normalized.split(':').map(Number)
   return hour * 60 + minute
 }
 
+function minutesToTime(totalMinutes: number): string {
+  const hour = Math.floor(totalMinutes / 60)
+  const minute = totalMinutes % 60
+  return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`
+}
+
 function payoutTime(seed: number, partIndex: number, timeFrom: string, timeTo: string): string {
-  // Generate a deterministic time INSIDE the user-selected inclusive range.
-  // Defaults preserve the old 08:00-17:59 working-day window.
   const from = timeToMinutes(timeFrom, 8 * 60)
   const to = timeToMinutes(timeTo, 17 * 60 + 59)
   const start = Math.min(from, to)
   const end = Math.max(from, to)
   const span = end - start + 1
   const offset = (Math.abs(Math.trunc(seed)) * 47 + partIndex * 137) % span
-  const totalMinutes = start + offset
-  const hour = Math.floor(totalMinutes / 60)
-  const minute = totalMinutes % 60
-  return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`
+  return minutesToTime(start + offset)
+}
+
+type Boundary = {
+  date: string
+  source: 'POTRDILO_START' | 'POTRDILO_END'
+  potrdiloId: string
+}
+
+function moveToWorkday(date: string, direction: 1 | -1, minDate: string, maxDate: string): string | null {
+  let cur = date
+  for (let guard = 0; guard < 14 && cur >= minDate && cur <= maxDate; guard++) {
+    if (isSlovenianWorkday(cur)) return cur
+    cur = addIsoDays(cur, direction)
+  }
+  return null
+}
+
+function employeeBounds(employee: Employee | null, potrdila: Potrdilo[], win: ReturnType<typeof payoutWindow>): Boundary[] {
+  if (!employee) return []
+  const out: Boundary[] = []
+  for (const p of potrdila.filter((x) => x.employeeId === employee.id)) {
+    const rawFrom = p.fromAt.slice(0, 10)
+    const rawTo = p.toAt.slice(0, 10)
+    if (rawTo < win.start || rawFrom > win.end) continue
+    const overlapStart = rawFrom < win.start ? win.start : rawFrom
+    const overlapEnd = rawTo > win.end ? win.end : rawTo
+    const start = moveToWorkday(overlapStart, 1, overlapStart, overlapEnd)
+    const end = moveToWorkday(overlapEnd, -1, overlapStart, overlapEnd)
+    if (start) out.push({ date: start, source: 'POTRDILO_START', potrdiloId: p.id })
+    if (end) out.push({ date: end, source: 'POTRDILO_END', potrdiloId: p.id })
+  }
+  const seen = new Set<string>()
+  return out
+    .sort((a, b) => a.date.localeCompare(b.date) || a.source.localeCompare(b.source))
+    .filter((b) => {
+      const key = `${b.date}|${b.potrdiloId}`
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+}
+
+function baseBalanceAt(context: PayoutScheduleContext, at: string): number {
+  let balance = context.currentBalance
+  for (const event of context.events) {
+    if (event.at > at) balance -= event.delta
+  }
+  return Math.round(balance * 100) / 100
+}
+
+function scheduleStaysSolvent(context: PayoutScheduleContext, scheduled: { at: string; amount: number }[]): boolean {
+  if (!scheduled.length) return true
+  const checkpoints = [...new Set([
+    ...context.events.map((e) => e.at),
+    ...scheduled.map((s) => s.at),
+  ])].sort()
+  for (const at of checkpoints) {
+    const imported = scheduled.reduce((sum, s) => sum + (s.at <= at ? s.amount : 0), 0)
+    if (baseBalanceAt(context, at) - imported < -0.001) return false
+  }
+  const importedTotal = scheduled.reduce((sum, s) => sum + s.amount, 0)
+  return context.currentBalance - importedTotal >= -0.001
+}
+
+function availableBeforeCandidate(
+  context: PayoutScheduleContext,
+  scheduled: { at: string; amount: number }[],
+  at: string,
+): number {
+  const alreadyImported = scheduled.reduce((sum, s) => sum + (s.at <= at ? s.amount : 0), 0)
+  return Math.round((baseBalanceAt(context, at) - alreadyImported) * 100) / 100
+}
+
+function candidateTimesForDate(
+  date: string,
+  preferred: string,
+  timeFrom: string,
+  timeTo: string,
+  context?: PayoutScheduleContext,
+  extraTimes: string[] = [],
+): string[] {
+  const from = timeToMinutes(timeFrom, 8 * 60)
+  const to = timeToMinutes(timeTo, 17 * 60 + 59)
+  const start = Math.min(from, to), end = Math.max(from, to)
+  const ordered: number[] = []
+  const addMinute = (minute: number) => {
+    if (minute >= start && minute <= end && !ordered.includes(minute)) ordered.push(minute)
+  }
+  addMinute(timeToMinutes(preferred, start))
+  extraTimes.forEach((time) => addMinute(timeToMinutes(time, -1)))
+  if (context) {
+    const afterIncoming = context.events
+      .filter((e) => e.delta > 0 && e.at.startsWith(`${date}T`))
+      .map((e) => {
+        const t = normalizePayoutTime(e.at.slice(11, 16))
+        return t ? timeToMinutes(t, -1) + 1 : -1
+      })
+      .filter((minute) => minute >= start && minute <= end)
+      .sort((a, b) => a - b)
+    afterIncoming.forEach(addMinute)
+  }
+  addMinute(start)
+  addMinute(end)
+  return ordered.map(minutesToTime)
+}
+
+function findCoveringPotrdilo(employee: Employee | null, potrdila: Potrdilo[], date: string, time: string): Potrdilo | null {
+  if (!employee || !date || !time) return null
+  const at = `${date}T${time}:00`
+  return potrdila.find((p) => p.employeeId === employee.id && at >= p.fromAt && at <= p.toAt) ?? null
+}
+
+function employeeEligibleBusinessDays(employee: Employee | null, potrdila: Potrdilo[], win: ReturnType<typeof payoutWindow>): string[] {
+  const workdays = win.days.filter(isSlovenianWorkday)
+  if (!employee) return workdays
+  const certs = potrdila.filter((p) => p.employeeId === employee.id && p.toAt.slice(0, 10) >= win.start && p.fromAt.slice(0, 10) <= win.end)
+  // For a matched employee, a payout may only be scheduled inside an overlapping certificate.
+  // No overlapping certificate means no automatic BI for that employee.
+  if (!certs.length) return []
+  return workdays.filter((date) => certs.some((p) => date >= p.fromAt.slice(0, 10) && date <= p.toAt.slice(0, 10)))
+}
+
+function certificateTimesOnDate(employee: Employee | null, potrdila: Potrdilo[], date: string): string[] {
+  if (!employee) return []
+  const out: string[] = []
+  for (const p of potrdila.filter((x) => x.employeeId === employee.id)) {
+    if (p.fromAt.startsWith(`${date}T`)) out.push(p.fromAt.slice(11, 16))
+    if (p.toAt.startsWith(`${date}T`)) out.push(p.toAt.slice(11, 16))
+  }
+  return out
+}
+
+export function validatePayoutSchedule(
+  parts: PayoutPart[],
+  win: ReturnType<typeof payoutWindow>,
+  timeFrom = '08:00',
+  timeTo = '17:59',
+  context?: PayoutScheduleContext,
+  potrdila: Potrdilo[] = [],
+): Map<string, string[]> {
+  const errors = new Map<string, string[]>()
+  const add = (key: string, message: string) => errors.set(key, [...(errors.get(key) ?? []), message])
+  const from = timeToMinutes(timeFrom, 8 * 60)
+  const to = timeToMinutes(timeTo, 17 * 60 + 59)
+  const minTime = Math.min(from, to), maxTime = Math.max(from, to)
+
+  for (const p of parts) {
+    // Yellow/skipped rows are informational only and are not imported.
+    if (p.skipReason) continue
+    if (p.scheduleError) add(p.partKey, p.scheduleError)
+    // When the automatic scheduler intentionally leaves both fields empty because
+    // there is no cash-feasible slot, the scheduleError above is the useful error.
+    // Do not add misleading date/time-format errors on top of it.
+    if (p.scheduleError && !p.date && !p.time) continue
+    if (!isoDateToUtc(p.date)) add(p.partKey, 'Datum ni veljaven. Uporabite DD.MM.YYYY.')
+    else {
+      if (p.date < win.start || p.date > win.end) add(p.partKey, `Datum mora biti med ${formatSloDate(win.start)} in ${formatSloDate(win.end)}.`)
+      if (!isSlovenianWorkday(p.date)) {
+        const holiday = slovenianHolidayName(p.date)
+        add(p.partKey, holiday ? `Datum je praznik (${holiday}).` : 'Datum je sobota ali nedelja.')
+      }
+    }
+    const time = normalizePayoutTime(p.time)
+    if (!time) add(p.partKey, 'Čas ni veljaven. Uporabite HH:MM.')
+    else {
+      const minutes = timeToMinutes(time, -1)
+      if (minutes < minTime || minutes > maxTime) add(p.partKey, `Čas mora biti med ${minutesToTime(minTime)} in ${minutesToTime(maxTime)}.`)
+      if (p.employee && isoDateToUtc(p.date) && potrdila.length > 0) {
+        const at = `${p.date}T${time}:00`
+        const employeeCerts = potrdila.filter((cert) => cert.employeeId === p.employee!.id)
+        if (employeeCerts.length > 0 && !employeeCerts.some((cert) => at >= cert.fromAt && at <= cert.toAt)) {
+          add(p.partKey, 'Datum/čas ni znotraj nobenega dopust lista zaposlenega.')
+        }
+      }
+    }
+  }
+
+  const groups = new Map<number, PayoutPart[]>()
+  for (const p of parts) {
+    if (p.skipReason) continue
+    const group = groups.get(p.sourceRow) ?? []
+    group.push(p)
+    groups.set(p.sourceRow, group)
+  }
+  for (const group of groups.values()) {
+    if (group.length < 2) continue
+    const ordered = group.filter((p) => isoDateToUtc(p.date)).sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time))
+    for (let i = 1; i < ordered.length; i++) {
+      if (daysBetween(ordered[i - 1].date, ordered[i].date) < 7) add(ordered[i].partKey, 'Med razdeljenima BI mora biti najmanj 7 dni.')
+    }
+  }
+
+  if (context) {
+    const valid = parts
+      .filter((p) => !p.skipReason && isoDateToUtc(p.date) && normalizePayoutTime(p.time))
+      .sort((a, b) => `${a.date}T${a.time}`.localeCompare(`${b.date}T${b.time}`))
+    const scheduled: { at: string; amount: number }[] = []
+    for (const p of valid) {
+      scheduled.push({ at: `${p.date}T${p.time}:00`, amount: p.amount })
+      if (!scheduleStaysSolvent(context, scheduled)) add(p.partKey, 'Na ta datum/čas v blagajni še ni dovolj denarja za ta BI.')
+    }
+  }
+  return errors
 }
 
 export function buildPayoutParts(
@@ -401,61 +695,141 @@ export function buildPayoutParts(
   monthKey: string,
   timeFrom = '08:00',
   timeTo = '17:59',
+  context?: PayoutScheduleContext,
 ): PayoutPart[] {
   const win = payoutWindow(monthKey)
   const out: PayoutPart[] = []
-  let fallbackCursor = 0
+  const scheduledCash: { at: string; amount: number }[] = []
 
   for (const row of rows) {
     const employee = matchEmployee(row, employees)
     const split = splitPayoutAmount(row.amount, row.rowNo)
-    const bounds = uniqueBounds(employee ? potrdila
-      .filter((p) => p.employeeId === employee.id)
-      .flatMap((p) => [
-        { date: p.fromAt.slice(0, 10), source: 'POTRDILO_START' as const, potrdiloId: p.id },
-        { date: p.toAt.slice(0, 10), source: 'POTRDILO_END' as const, potrdiloId: p.id },
-      ])
-      .filter((x) => x.date >= win.start && x.date <= win.end)
-      .sort((a, b) => a.date.localeCompare(b.date)) : [])
-
-    // Use valid dopust-list boundaries first, but never put all split pieces
-    // on one day. Any remaining pieces are spread across the full 20.-16. window.
-    const chosenBounds = bounds.slice(0, split.parts.length)
-    const usedDates = new Set(chosenBounds.map((b) => b.date))
-    const neededFallback = Math.max(0, split.parts.length - chosenBounds.length)
-    let fallbackDays = spreadWindowDays(win.days, neededFallback, row.rowNo + fallbackCursor, usedDates)
-
-    // Extremely large imports can contain more pieces than the number of days
-    // in the window. In that unusual case, cycle through the window; times stay different.
-    while (fallbackDays.length < neededFallback) {
-      fallbackDays.push(win.days[(fallbackCursor + fallbackDays.length) % win.days.length])
-    }
-    fallbackCursor += neededFallback
-
-    const schedule = [
-      ...chosenBounds.map((b) => ({ date: b.date, source: b.source, potrdiloId: b.potrdiloId })),
-      ...fallbackDays.map((date) => ({ date, source: 'WINDOW' as const, potrdiloId: null })),
-    ].sort((a, b) => a.date.localeCompare(b.date))
+    const bounds = employeeBounds(employee, potrdila, win)
+    const overlappingCertificates = employee
+      ? potrdila.filter((p) => p.employeeId === employee.id && p.toAt.slice(0, 10) >= win.start && p.fromAt.slice(0, 10) <= win.end)
+      : []
+    const eligibleDays = employeeEligibleBusinessDays(employee, potrdila, win)
+    let previousDate: string | null = null
 
     split.parts.forEach((amount, i) => {
-      const slot = schedule[i]
+      const partKey = `${row.rowNo}-${i}`
+      const earliest = previousDate ? addIsoDays(previousDate, 7) : win.start
+      const remainingParts = split.parts.length - i - 1
+      // Do not consume a late date too early: leave at least 7 calendar days
+      // for every remaining BI from the same source row.
+      const latest = addIsoDays(win.end, -7 * remainingParts)
+      const preferredTime = payoutTime(row.rowNo, i, timeFrom, timeTo)
+      const boundCandidates = bounds.filter((b) => b.date >= earliest && b.date <= latest)
+      const boundaryByDate = new Map(boundCandidates.map((b) => [b.date, b]))
+      // Walk forward chronologically. A certificate start/end wins when it falls on
+      // that day, but we do not postpone a BI to a much later boundary if money is
+      // already available on an earlier valid workday.
+      const candidates = eligibleDays
+        .filter((date) => date >= earliest && date <= latest)
+        .map((date) => boundaryByDate.get(date) ?? { date, source: 'WINDOW' as const, potrdiloId: null })
+
+      const certificateSlots: { date: string; time: string; source: 'POTRDILO_START' | 'POTRDILO_END' | 'WINDOW'; potrdiloId: string | null }[] = []
+      for (const c of candidates) {
+        const certificateTimes = certificateTimesOnDate(employee, potrdila, c.date)
+        for (const time of candidateTimesForDate(c.date, preferredTime, timeFrom, timeTo, context, certificateTimes)) {
+          const covering = findCoveringPotrdilo(employee, potrdila, c.date, time)
+          // A matched employee must ALWAYS have an active certificate at the exact payout date/time.
+          if (employee && !covering) continue
+          certificateSlots.push({ ...c, time, potrdiloId: covering?.id ?? c.potrdiloId })
+        }
+      }
+
       const warnings: string[] = []
       if (!employee) warnings.push('Zaposleni ni enolično najden')
-      if (slot.source === 'WINDOW') warnings.push(bounds.length ? 'Dodatni del je razporejen na drug dan v oknu 20.–16.' : 'Ni meje dopust lista v obdobju; uporabljen je razpršen datum iz okna 20.–16.')
-      if (split.split) warnings.push('Znesek nad 700 € je razdeljen na dele 300–500 €; vsota ostane nespremenjena')
+      if (split.split) warnings.push('Znesek nad 700 € je razdeljen na dele 300–500 €; med deli je najmanj 7 dni.')
 
+      // If there is no valid date+time inside a dopust list, do not suggest a
+      // date OR a time. Keep the row yellow so it is obvious that it will not be imported.
+      if (employee && certificateSlots.length === 0) {
+        const reason = overlappingCertificates.length === 0
+          ? `V obdobju ${formatSloDate(win.start)}–${formatSloDate(win.end)} zaposleni nima dopust lista. Datum in čas nista predlagana; ta BI ne bo uvožen.`
+          : 'Dopust list obstaja, vendar v njegovem prekrivanju z izbranim obdobjem ni veljavnega delovnega dne in časa. Datum in čas nista predlagana; ta BI ne bo uvožen.'
+        out.push({
+          partKey,
+          sourceRow: row.rowNo,
+          employee,
+          employeeName: employee.displayName,
+          originalAmount: row.amount,
+          amount,
+          date: '',
+          time: '',
+          dateSource: 'WINDOW',
+          potrdiloId: null,
+          warning: warnings.join(' · ') || undefined,
+          skipReason: reason,
+        })
+        return
+      }
+
+      let chosen: { date: string; time: string; source: 'POTRDILO_START' | 'POTRDILO_END' | 'WINDOW'; potrdiloId: string | null } | null = null
+      for (const slot of certificateSlots) {
+        if (context && !scheduleStaysSolvent(context, [...scheduledCash, { at: `${slot.date}T${slot.time}:00`, amount }])) continue
+        chosen = slot
+        break
+      }
+
+      if (chosen?.source === 'WINDOW' && bounds.length) warnings.push('Datum je bil premaknjen z meje dopust lista zaradi 7-dnevnega razmika ali stanja blagajne.')
+
+      if (!chosen) {
+        let cashAvailable: number | undefined
+        let cashAt: string | undefined
+        if (context && certificateSlots.length) {
+          for (const slot of certificateSlots) {
+            const at = `${slot.date}T${slot.time}:00`
+            const available = availableBeforeCandidate(context, scheduledCash, at)
+            if (cashAvailable === undefined || available > cashAvailable) {
+              cashAvailable = available
+              cashAt = at
+            }
+          }
+        }
+        const shortfall = cashAvailable === undefined ? undefined : Math.max(0, Math.round((amount - cashAvailable) * 100) / 100)
+        const cashDetail = context && cashAvailable !== undefined && cashAt
+          ? ` Največ razpoložljivo v veljavnih terminih je ${cashAvailable.toFixed(2)} EUR (${formatSloDate(cashAt.slice(0, 10))} ${cashAt.slice(11, 16)}); BI potrebuje ${amount.toFixed(2)} EUR${shortfall && shortfall > 0 ? `, manjka ${shortfall.toFixed(2)} EUR` : ''}.`
+          : ''
+        out.push({
+          partKey,
+          sourceRow: row.rowNo,
+          employee,
+          employeeName: employee?.displayName ?? row.displayName,
+          originalAmount: row.amount,
+          amount,
+          date: '',
+          time: '',
+          dateSource: 'WINDOW',
+          potrdiloId: null,
+          warning: warnings.join(' · ') || undefined,
+          scheduleError: context
+            ? `Znotraj dopust lista obstaja veljaven termin, vendar takrat v blagajni ni dovolj denarja za ta BI.${cashDetail}`
+            : 'V dopust listu ni mogoče razporediti vseh delov z zahtevanim 7-dnevnim razmikom.',
+          cashAvailable,
+          cashAt,
+        })
+        return
+      }
+
+      const covering = findCoveringPotrdilo(employee, potrdila, chosen.date, chosen.time)
+      const linkedPotrdiloId = covering?.id ?? chosen.potrdiloId
       out.push({
+        partKey,
         sourceRow: row.rowNo,
         employee,
         employeeName: employee?.displayName ?? row.displayName,
         originalAmount: row.amount,
         amount,
-        date: slot.date,
-        time: payoutTime(row.rowNo, i, timeFrom, timeTo),
-        dateSource: slot.source,
-        potrdiloId: slot.potrdiloId,
+        date: chosen.date,
+        time: chosen.time,
+        dateSource: chosen.source,
+        potrdiloId: linkedPotrdiloId,
         warning: warnings.join(' · ') || undefined,
       })
+      scheduledCash.push({ at: `${chosen.date}T${chosen.time}:00`, amount })
+      previousDate = chosen.date
     })
   }
   return out

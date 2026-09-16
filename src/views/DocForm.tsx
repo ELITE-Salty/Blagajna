@@ -157,6 +157,13 @@ function DocFormInner({
   )
   const linked = potrdila.find((p) => p.id === d.potrdiloId) ?? null
   const tx = txAt(d)
+  const overlappingPotrdila = useMemo(
+    () => potrdila
+      .filter((p) => tx >= p.fromAt && tx <= p.toAt)
+      .slice()
+      .sort((a, b) => b.fromAt.localeCompare(a.fromAt)),
+    [potrdila, tx],
+  )
   const outsideInterval = linked && (tx < linked.fromAt || tx > linked.toAt)
 
 
@@ -353,32 +360,34 @@ function DocFormInner({
         </Field>
       </div>
 
-      {/* Kontekst potrdila o dejavnostih */}
-      {d.employeeId && potrdila.length > 0 && (
+      {/* Kontekst potrdila o dejavnostih — pokaži samo potrdila, ki pokrivajo čas transakcije. */}
+      {d.employeeId && overlappingPotrdila.length > 0 && (
         <div className="mt-3 rounded-lg border border-blu-100 bg-blu-50 p-3">
-          <div className="text-[11px] font-semibold uppercase tracking-wide text-blu-700 mb-1.5">Obdobja dejavnosti zaposlenega (potrdila)</div>
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-blu-700 mb-1.5">Potrdila, ki pokrivajo čas transakcije</div>
           <div className="space-y-1.5">
-            {potrdila.slice().sort((a, b) => b.fromAt.localeCompare(a.fromAt)).slice(0, 4).map((p) => {
-              const active = tx >= p.fromAt && tx <= p.toAt
-              return (
-                <div key={p.id} className={cx('flex flex-wrap items-center gap-2 text-sm rounded-md px-2 py-1', active ? 'bg-white border border-blu-200' : '')}>
-                  <span className="font-mono text-[12px]">{fmtDateTime(p.fromAt)} → {fmtDateTime(p.toAt)}</span>
-                  {active && <Chip tone="green">pokriva čas transakcije</Chip>}
-                  {d.potrdiloId === p.id && <Chip tone="blue">povezano</Chip>}
-                  {editable && (
-                    <span className="flex gap-1 ml-auto">
-                      <Btn kind="ghost" onClick={() => set({ transactionDate: p.fromAt.slice(0, 10), transactionTime: p.fromAt.slice(11, 16) })}>Uporabi začetek</Btn>
-                      <Btn kind="ghost" onClick={() => set({ transactionDate: p.toAt.slice(0, 10), transactionTime: p.toAt.slice(11, 16) })}>Uporabi konec</Btn>
-                      <Btn kind="ghost" onClick={() => set({ potrdiloId: d.potrdiloId === p.id ? null : p.id })}>{d.potrdiloId === p.id ? 'Odveži' : 'Poveži'}</Btn>
-                    </span>
-                  )}
-                </div>
-              )
-            })}
+            {overlappingPotrdila.map((p) => (
+              <div key={p.id} className="flex flex-wrap items-center gap-2 text-sm rounded-md px-2 py-1 bg-white border border-blu-200">
+                <span className="font-mono text-[12px]">{fmtDateTime(p.fromAt)} → {fmtDateTime(p.toAt)}</span>
+                <Chip tone="green">pokriva čas transakcije</Chip>
+                {d.potrdiloId === p.id && <Chip tone="blue">povezano</Chip>}
+                {editable && (
+                  <span className="flex gap-1 ml-auto">
+                    <Btn kind="ghost" onClick={() => set({ transactionDate: p.fromAt.slice(0, 10), transactionTime: p.fromAt.slice(11, 16) })}>Uporabi začetek</Btn>
+                    <Btn kind="ghost" onClick={() => set({ transactionDate: p.toAt.slice(0, 10), transactionTime: p.toAt.slice(11, 16) })}>Uporabi konec</Btn>
+                    <Btn kind="ghost" onClick={() => set({ potrdiloId: d.potrdiloId === p.id ? null : p.id })}>{d.potrdiloId === p.id ? 'Odveži' : 'Poveži'}</Btn>
+                  </span>
+                )}
+              </div>
+            ))}
           </div>
-          {outsideInterval && (
-            <div className="mt-2"><Warn>Čas transakcije je izven obdobja povezanega potrdila ({fmtDateTime(linked!.fromAt)} → {fmtDateTime(linked!.toAt)}). Preverite datum in čas — shranjevanje ni blokirano.</Warn></div>
-          )}
+        </div>
+      )}
+      {outsideInterval && (
+        <div className="mt-2">
+          <Warn>
+            Povezano potrdilo ne pokriva trenutnega časa transakcije ({fmtDateTime(linked!.fromAt)} → {fmtDateTime(linked!.toAt)}).
+            {editable && <button type="button" className="ml-2 font-semibold underline" onClick={() => set({ potrdiloId: null })}>Odveži potrdilo</button>}
+          </Warn>
         </div>
       )}
 
