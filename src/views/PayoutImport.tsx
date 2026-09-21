@@ -8,6 +8,8 @@ import { emptyDoc } from '../db'
 import { balanceInfo } from '../lib/balance'
 import {
   MIN_GAP_WORKDAYS,
+  SPLIT_MAX_EUR,
+  SPLIT_MIN_EUR,
   SPLIT_THRESHOLD_EUR,
   buildPayoutParts,
   formatSloDate,
@@ -16,13 +18,14 @@ import {
   payoutImportReadiness,
   payoutWindow,
   readPayoutSource,
+  splitPayoutAmount,
   validatePayoutSchedule,
   CashLedger,
   type CashEvent,
   type PayoutPart,
   type PayoutSourceRow,
 } from '../lib/payoutImport'
-import { fmtEur, nowIso, uuid } from '../lib/util'
+import { fmtEur, monthLabel, nowIso, parseAmount, uuid } from '../lib/util'
 import { physicalDesks } from '../lib/desks'
 import { closeIdFor } from '../lib/numbering'
 
@@ -31,6 +34,15 @@ type PartEdit = {
   time?: string
   subject?: string
 }
+
+type SplitEditorState = {
+  rowNo: number
+  amounts: string[]
+  error?: string
+}
+
+const amountText = (value: number) => value.toLocaleString('sl-SI', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+const batchName = (month: string) => `Akontacije dodatki za ${monthLabel(month)}`
 
 function buildCashEvents(docs: any[], transfers: any[], deskId: string): CashEvent[] {
   if (!deskId) return []
@@ -66,7 +78,7 @@ function sourceLabel(p: PayoutPart): string {
   if (p.dateSource === 'POTRDILO_START') return 'začetek dopust lista'
   if (p.dateSource === 'POTRDILO_END') return 'konec dopust lista'
   if (p.dateSource === 'MANUAL') return 'ročno'
-  return 'okno 20.–16.'
+  return 'okno 18.–16.'
 }
 
 /** Compact label + value pair for the single status bar. */
@@ -97,10 +109,15 @@ function PayoutImportModal({ initialMonth, initialDeskId, onClose, onDone }: {
   const [deskId, setDeskId] = useState(() => locations.some((d) => d.id === initialDeskId) ? initialDeskId : '')
   const [source, setSource] = useState<PayoutSourceRow[]>([])
   const [fileName, setFileName] = useState('')
-  const [defaultSubject, setDefaultSubject] = useState('Akontacija')
+  const [defaultSubject, setDefaultSubject] = useState(() => batchName(initialMonth))
+  const [subjectCustomized, setSubjectCustomized] = useState(false)
   const [timeFrom, setTimeFrom] = useState('08:00')
   const [timeTo, setTimeTo] = useState('17:59')
   const [partEdits, setPartEdits] = useState<Record<string, PartEdit>>({})
+  const [splitOverrides, setSplitOverrides] = useState<Record<number, number[]>>({})
+  const [amountDrafts, setAmountDrafts] = useState<Record<string, string>>({})
+  const [splitEditor, setSplitEditor] = useState<SplitEditorState | null>(null)
+  const [leaveConfirmOpen, setLeaveConfirmOpen] = useState(false)
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
 
@@ -122,6 +139,10 @@ function PayoutImportModal({ initialMonth, initialDeskId, onClose, onDone }: {
     setPartEdits({})
   }, [month, deskId, timeFrom, timeTo])
 
+  useEffect(() => {
+    if (!subjectCustomized) setDefaultSubject(batchName(month))
+  }, [month, subjectCustomized])
+
   // Use the same balance calculation as MonthWorkspace. This is important because
   // internal transfers are part of the real cash balance of an internal blagajna.
   const cashContext = useLiveQuery(async () => {
@@ -140,8 +161,8 @@ function PayoutImportModal({ initialMonth, initialDeskId, onClose, onDone }: {
   const win = payoutWindow(month)
 
   const generatedParts = useMemo(
-    () => buildPayoutParts(source, employees, potrdila, month, timeFrom, timeTo, cashContext, { defaultSubject }),
-    [source, employees, potrdila, month, timeFrom, timeTo, cashContext, defaultSubject],
+    () => buildPayoutParts(source, employees, potrdila, month, timeFrom, timeTo, cashContext, { defaultSubject, amountsBySourceRow: splitOverrides }),
+    [source, employees, potrdila, month, timeFrom, timeTo, cashContext, defaultSubject, splitOverrides],
   )
 
   const cashDiagnostics = useMemo(() => {
@@ -230,6 +251,12 @@ function PayoutImportModal({ initialMonth, initialDeskId, onClose, onDone }: {
 
   const visibleParts = onlyProblems ? parts.filter((p) => (allErrors.get(p.partKey) ?? []).length > 0) : parts
   const deskName = locations.find((d) => d.id === deskId)?.name ?? ''
+  const sourceByRow = useMemo(() => new Map(source.map((row) => [row.rowNo, row])), [source])
+
+  function requestClose() {
+    if (busy) return
+    setLeaveConfirmOpen(true)
+  }
 
   function editPart(partKey: string, patch: PartEdit) {
     setPartEdits((prev) => ({ ...prev, [partKey]: { ...prev[partKey], ...patch } }))
@@ -243,6 +270,85 @@ function PayoutImportModal({ initialMonth, initialDeskId, onClose, onDone }: {
     })
   }
 
+  function setPartAmount(p: PayoutPart, raw: string) {
+    const parsed = parseAmount(raw)
+    const siblings = parts
+      .filter((part) => part.sourceRow === p.sourceRow)
+      .sort((a, b) => Number(a.partKey.split('-')[1]) - Number(b.partKey.split('-')[1]))
+    const amounts = siblings.map((part) => part.amount)
+    const index = Number(p.partKey.split('-')[1])
+    amounts[index] = parsed != null && parsed > 0 ? parsed : 0
+    setSplitOverrides((prev) => ({ ...prev, [p.sourceRow]: amounts }))
+    setAmountDrafts((prev) => {
+      const next = { ...prev }
+      delete next[p.partKey]
+      return next
+    })
+  }
+
+  function openSplitEditor(rowNo: number) {
+    const row = sourceByRow.get(rowNo)
+    if (!row) return
+    const current = splitOverrides[rowNo] ?? splitPayoutAmount(row.amount, row.rowNo).parts
+    setSplitEditor({ rowNo, amounts: current.map(amountText) })
+  }
+
+  function suggestSplit(total: number, count: number): string[] {
+    if (count <= 1) return [amountText(total)]
+    let base = Math.floor((total / count) / 5) * 5
+    if (base <= 0) base = Math.floor((total / count) * 100) / 100
+    const amounts = Array.from({ length: count }, () => base)
+    amounts[count - 1] = Math.round((total - base * (count - 1)) * 100) / 100
+    return amounts.map(amountText)
+  }
+
+  function setSplitCount(raw: string) {
+    if (!splitEditor) return
+    const row = sourceByRow.get(splitEditor.rowNo)
+    if (!row) return
+    const count = Math.max(1, Math.min(20, Math.trunc(Number(raw) || 1)))
+    setSplitEditor({ ...splitEditor, amounts: suggestSplit(row.amount, count), error: undefined })
+  }
+
+  function setSplitEditorAmount(index: number, value: string) {
+    if (!splitEditor) return
+    const amounts = [...splitEditor.amounts]
+    amounts[index] = value
+    setSplitEditor({ ...splitEditor, amounts, error: undefined })
+  }
+
+  function applySplitEditor() {
+    if (!splitEditor) return
+    const row = sourceByRow.get(splitEditor.rowNo)
+    if (!row) return
+    const parsed = splitEditor.amounts.map(parseAmount)
+    if (parsed.some((amount) => amount == null || amount <= 0)) {
+      setSplitEditor({ ...splitEditor, error: 'Vsak del mora imeti veljaven znesek, večji od 0 €.' })
+      return
+    }
+    const amounts = parsed as number[]
+    const sum = Math.round(amounts.reduce((total, amount) => total + amount, 0) * 100) / 100
+    if (Math.abs(sum - row.amount) > 0.001) {
+      setSplitEditor({ ...splitEditor, error: `Vsota delov mora biti ${fmtEur(row.amount)}. Trenutno je ${fmtEur(sum)}.` })
+      return
+    }
+    setSplitOverrides((prev) => ({ ...prev, [row.rowNo]: amounts }))
+    setPartEdits((prev) => Object.fromEntries(Object.entries(prev).filter(([key]) => !key.startsWith(`${row.rowNo}-`))))
+    setAmountDrafts((prev) => Object.fromEntries(Object.entries(prev).filter(([key]) => !key.startsWith(`${row.rowNo}-`))))
+    setSplitEditor(null)
+  }
+
+  function resetSplit(rowNo: number) {
+    setSplitOverrides((prev) => {
+      const next = { ...prev }
+      delete next[rowNo]
+      return next
+    })
+    setPartEdits((prev) => Object.fromEntries(Object.entries(prev).filter(([key]) => !key.startsWith(`${rowNo}-`))))
+    setAmountDrafts((prev) => Object.fromEntries(Object.entries(prev).filter(([key]) => !key.startsWith(`${rowNo}-`))))
+    setSplitEditor(null)
+  }
+
   async function load(file: File | null) {
     if (!file) return
     setErr('')
@@ -250,6 +356,8 @@ function PayoutImportModal({ initialMonth, initialDeskId, onClose, onDone }: {
       const rows = await readPayoutSource(file)
       if (!rows.length) throw new Error('V datoteki ni veljavnih vrstic z imenom, priimkom in zneskom.')
       setPartEdits({})
+      setSplitOverrides({})
+      setAmountDrafts({})
       setSource(rows)
       setFileName(file.name)
       setSetupOpen(false)
@@ -258,6 +366,8 @@ function PayoutImportModal({ initialMonth, initialDeskId, onClose, onDone }: {
       setSource([])
       setFileName('')
       setPartEdits({})
+      setSplitOverrides({})
+      setAmountDrafts({})
       setSetupOpen(true)
       setErr(String(e?.message ?? e))
     }
@@ -311,7 +421,7 @@ function PayoutImportModal({ initialMonth, initialDeskId, onClose, onDone }: {
         purpose: p.subject.trim(),
         rows: [],
         potrdiloId: p.potrdiloId,
-        notes: `Uvoz akontacij: ${fileName} · vrstica ${p.sourceRow} · izvorni znesek ${p.originalAmount.toFixed(2)} EUR · razpored ${formatSloDate(p.date)} ${normalizePayoutTime(p.time)} · ${sourceLabel(p)}`,
+        notes: `${batchName(month)}: ${fileName} · vrstica ${p.sourceRow} · izvorni znesek ${p.originalAmount.toFixed(2)} EUR · razpored ${formatSloDate(p.date)} ${normalizePayoutTime(p.time)} · ${sourceLabel(p)}`,
         status: 'ODPRT',
         syncStatus: 'LOKALNO',
         createdAt: at,
@@ -320,7 +430,7 @@ function PayoutImportModal({ initialMonth, initialDeskId, onClose, onDone }: {
         updatedBy: app.userLabel,
       }))
       await db.docs.bulkPut(docs)
-      await app.audit('Uvoz akontacij', 'BlagajniskiDokument', 'batch', `${fileName} · ${source.length} vrstic → ${docs.length} BI · ${fmtEur(total)} · ${formatSloDate(win.start)}–${formatSloDate(win.end)} · čas ${timeFrom}–${timeTo}`)
+      await app.audit(batchName(month), 'BlagajniskiDokument', 'batch', `${fileName} · ${source.length} vrstic → ${docs.length} BI · ${fmtEur(total)} · ${formatSloDate(win.start)}–${formatSloDate(win.end)} · čas ${timeFrom}–${timeTo}`)
       if (app.mode === 'server') await app.syncNow()
       onDone()
     } catch (e: any) {
@@ -332,14 +442,19 @@ function PayoutImportModal({ initialMonth, initialDeskId, onClose, onDone }: {
   const statusClasses = statusTone === 'ok'
     ? 'border-emerald-200 bg-emerald-50'
     : statusTone === 'bad' ? 'border-red-200 bg-red-50' : 'border-slate-200 bg-slate-50'
+  const splitEditorRow = splitEditor ? sourceByRow.get(splitEditor.rowNo) : undefined
+  const splitEditorTotal = splitEditor
+    ? Math.round(splitEditor.amounts.reduce((sum, raw) => sum + (parseAmount(raw) ?? 0), 0) * 100) / 100
+    : 0
 
   return (
+    <>
     <Modal
-      title="Uvoz akontacij"
+      title={batchName(month)}
       wide
-      onClose={onClose}
+      onClose={requestClose}
       footer={<>
-        <Btn onClick={onClose}>Prekliči</Btn>
+        <Btn onClick={requestClose}>Prekliči</Btn>
         <div className="flex-1" />
         {parts.length > 0 && !readiness.canImport && (
           <span className="mr-3 text-[12px] font-medium text-red-700">
@@ -367,7 +482,7 @@ function PayoutImportModal({ initialMonth, initialDeskId, onClose, onDone }: {
               </select>
             </Field>
             <Field label="Privzeta zadeva" hint="Po vrsticah spremenljiva.">
-              <input className={inputCls} value={defaultSubject} onChange={(e) => setDefaultSubject(e.target.value)} />
+              <input className={inputCls} value={defaultSubject} onChange={(e) => { setSubjectCustomized(true); setDefaultSubject(e.target.value) }} />
             </Field>
             <Field label="Čas od"><input type="time" className={inputCls} value={timeFrom} onChange={(e) => setTimeFrom(e.target.value)} /></Field>
             <Field label="Čas do"><input type="time" className={inputCls} value={timeTo} onChange={(e) => setTimeTo(e.target.value)} /></Field>
@@ -468,7 +583,8 @@ function PayoutImportModal({ initialMonth, initialDeskId, onClose, onDone }: {
           <ul className="list-disc space-y-1 pl-4">
             <li>Vsak izdatek mora imeti <b>datum, uro in Zadevo</b>; datum in ura morata biti <b>znotraj dopust lista</b> zaposlenega.</li>
             <li>Sobote, nedelje in slovenski dela prosti prazniki se preskočijo.</li>
-            <li>Znesek nad <b>{SPLIT_THRESHOLD_EUR} €</b> se razdeli; med deli je najmanj <b>{MIN_GAP_WORKDAYS} delovnih dni</b>.</li>
+            <li>Znesek nad <b>{SPLIT_THRESHOLD_EUR} €</b> se samodejno razdeli na dele približno <b>{SPLIT_MIN_EUR}–{SPLIT_MAX_EUR} €</b>, praviloma zaokrožene na <b>5 €</b>; med deli je najmanj <b>{MIN_GAP_WORKDAYS} delovnih dni</b>.</li>
+            <li>Število delov in zneske lahko ročno spremenite. Ročni deli so lahko tudi zunaj samodejnega razpona, vendar morajo biti vsi pozitivni in njihova vsota mora ostati enaka izvornemu znesku.</li>
             <li>Stanje blagajne ne sme <b>nikoli</b> pasti pod 0 € — ne ob posameznem izdatku ne skupno. Upoštevani so tudi interni prenosi.</li>
             <li>Kjer samodejni razpored ni našel veljavnega termina, sta datum in ura <b>prazna</b>, Zadevo pa vpišete sami. Uvoz je zaklenjen, dokler ni urejena <b>vsaka</b> vrstica.</li>
           </ul>
@@ -516,13 +632,38 @@ function PayoutImportModal({ initialMonth, initialDeskId, onClose, onDone }: {
                     <div className="font-medium">
                       {p.employee ? p.employee.displayName : <span className="text-red-700">{p.employeeName} — ni najden</span>}
                       {siblings > 1 && <span className="ml-1.5 rounded bg-slate-200 px-1 py-0.5 font-mono text-[10px] text-slate-600">{partNo}/{siblings}</span>}
+                      {splitOverrides[p.sourceRow] && <span className="ml-1.5 rounded bg-blu-50 px-1 py-0.5 text-[10px] font-medium text-blu-700">ročno</span>}
                     </div>
                     <div className="font-mono text-[10.5px] text-slate-400">
                       vr. {p.sourceRow}
                       {siblings > 1 && <> · iz {fmtEur(p.originalAmount)}</>}
                     </div>
+                    {partNo === 1 && (
+                      <div className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-[10.5px]">
+                        <button type="button" className="font-medium text-blu-700 underline hover:text-blu-900" onClick={() => openSplitEditor(p.sourceRow)}>
+                          Spremeni delitev
+                        </button>
+                        {splitOverrides[p.sourceRow] && (
+                          <button type="button" className="text-slate-500 underline hover:text-slate-800" onClick={() => resetSplit(p.sourceRow)}>
+                            samodejno
+                          </button>
+                        )}
+                      </div>
+                    )}
                   </td>
-                  <td className="px-2 py-1.5 text-right align-top font-mono font-semibold tabular-nums">{fmtEur(p.amount)}</td>
+                  <td className="px-2 py-1.5 text-right align-top">
+                    <div className="flex items-center justify-end gap-1">
+                      <input
+                        className={`${inputCls} w-[92px] text-right font-mono font-semibold tabular-nums ${rowErrors.some((x) => x.startsWith('Znesek') || x.startsWith('Vsota delov')) ? 'border-red-400 bg-red-50' : ''}`}
+                        inputMode="decimal"
+                        value={amountDrafts[p.partKey] ?? amountText(p.amount)}
+                        onChange={(e) => setAmountDrafts((prev) => ({ ...prev, [p.partKey]: e.target.value }))}
+                        onBlur={(e) => setPartAmount(p, e.target.value)}
+                        aria-label={`Znesek za ${p.employeeName}, del ${partNo}`}
+                      />
+                      <span className="text-[11px] text-slate-500">€</span>
+                    </div>
+                  </td>
                   <td className="px-2 py-1.5 align-top">
                     <input
                       className={`${inputCls} min-w-[118px] font-mono ${rowErrors.some((x) => x.startsWith('Datum')) || (needsUser && !p.date) ? 'border-red-400 bg-red-50' : ''}`}
@@ -585,6 +726,72 @@ function PayoutImportModal({ initialMonth, initialDeskId, onClose, onDone }: {
         )}
       </div>
     </Modal>
+    {splitEditor && splitEditorRow && (
+      <div className="fixed inset-0 z-50 grid place-items-center bg-slate-900/45 p-4 backdrop-blur-[1px] no-print" onMouseDown={(e) => e.target === e.currentTarget && setSplitEditor(null)}>
+        <div className="w-full max-w-lg rounded-xl border border-slate-200 bg-white shadow-2xl">
+          <div className="flex items-start justify-between gap-3 border-b border-slate-200 px-5 py-3">
+            <div>
+              <div className="font-semibold text-slate-800">Spremeni delitev</div>
+              <div className="mt-0.5 text-[12px] text-slate-500">
+                {splitEditorRow.displayName} · izvorni znesek <b>{fmtEur(splitEditorRow.amount)}</b>
+              </div>
+            </div>
+            <button type="button" className="px-1 text-xl leading-none text-slate-400 hover:text-slate-700" onClick={() => setSplitEditor(null)} title="Zapri">×</button>
+          </div>
+          <div className="space-y-4 px-5 py-4">
+            <Field label="Število delov" hint="Lahko zmanjšate ali povečate samodejni predlog.">
+              <input type="number" min={1} max={20} step={1} className={`${inputCls} max-w-28`} value={splitEditor.amounts.length} onChange={(e) => setSplitCount(e.target.value)} />
+            </Field>
+            <div>
+              <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">Zneski delov</div>
+              <div className="grid gap-2 sm:grid-cols-2">
+                {splitEditor.amounts.map((amount, index) => (
+                  <label key={index} className="flex items-center gap-2">
+                    <span className="w-12 text-[12px] text-slate-500">{index + 1}. del</span>
+                    <input
+                      className={`${inputCls} text-right font-mono`}
+                      inputMode="decimal"
+                      value={amount}
+                      onChange={(e) => setSplitEditorAmount(index, e.target.value)}
+                      autoFocus={index === 0}
+                    />
+                    <span className="text-sm text-slate-500">€</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+            <div className={`rounded-md border px-3 py-2 text-[12px] ${Math.abs(splitEditorTotal - splitEditorRow.amount) <= 0.001 ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-amber-200 bg-amber-50 text-amber-900'}`}>
+              Vsota: <b>{fmtEur(splitEditorTotal)}</b> / {fmtEur(splitEditorRow.amount)}
+            </div>
+            {splitEditor.error && <ErrBox>{splitEditor.error}</ErrBox>}
+            <div className="text-[11.5px] leading-relaxed text-slate-500">
+              Samodejna delitev uporablja dele približno {SPLIT_MIN_EUR}–{SPLIT_MAX_EUR} € in korak 5 €. Pri ročni delitvi lahko vnesete tudi drugačne zneske; pomembno je, da so pozitivni in da seštevek ostane enak izvornemu znesku.
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 rounded-b-xl border-t border-slate-200 bg-slate-50 px-5 py-3">
+            {splitOverrides[splitEditor.rowNo] && <Btn onClick={() => resetSplit(splitEditor.rowNo)}>Povrni samodejno</Btn>}
+            <div className="flex-1" />
+            <Btn onClick={() => setSplitEditor(null)}>Prekliči</Btn>
+            <Btn kind="primary" onClick={applySplitEditor}>Uporabi delitev</Btn>
+          </div>
+        </div>
+      </div>
+    )}
+    {leaveConfirmOpen && (
+      <div className="fixed inset-0 z-[60] grid place-items-center bg-slate-900/50 p-4 backdrop-blur-[1px] no-print" onMouseDown={(e) => e.target === e.currentTarget && setLeaveConfirmOpen(false)}>
+        <div className="w-full max-w-md rounded-xl border border-slate-200 bg-white shadow-2xl">
+          <div className="border-b border-slate-200 px-5 py-3 font-semibold text-slate-800">Želite zapustiti okno?</div>
+          <div className="px-5 py-4 text-sm leading-relaxed text-slate-600">
+            Če zapustite okno <b>{batchName(month)}</b>, bodo neshranjene spremembe uvoza izgubljene.
+          </div>
+          <div className="flex justify-end gap-2 rounded-b-xl border-t border-slate-200 bg-slate-50 px-5 py-3">
+            <Btn onClick={() => setLeaveConfirmOpen(false)}>Ostani</Btn>
+            <Btn kind="danger" onClick={onClose}>Zapusti</Btn>
+          </div>
+        </div>
+      </div>
+    )}
+    </>
   )
 }
 

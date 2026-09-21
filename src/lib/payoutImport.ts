@@ -20,8 +20,8 @@ export const MIN_GAP_WORKDAYS = 5
 /** Only amounts strictly above this are split into several izdatki. */
 export const SPLIT_THRESHOLD_EUR = 700
 
-/** Legal size range of a single split part. */
-export const SPLIT_MIN_EUR = 300
+/** Preferred automatic size range of a single split part. */
+export const SPLIT_MIN_EUR = 350
 export const SPLIT_MAX_EUR = 500
 
 /** Cash comparisons are done in EUR, so tolerate float noise below 1 cent. */
@@ -113,6 +113,12 @@ export interface PayoutScheduleOptions {
   defaultSubject?: string
   /** Override the workday spacing rule (defaults to MIN_GAP_WORKDAYS). */
   minGapWorkdays?: number
+  /**
+   * Optional user-defined split for a source row. Values are used exactly as
+   * entered (after cent rounding); the UI/validator is responsible for making
+   * sure they are positive and add back up to the imported source amount.
+   */
+  amountsBySourceRow?: Record<number, number[]>
 }
 
 export type PayoutWindow = { start: string; end: string; days: string[] }
@@ -342,7 +348,7 @@ export function splitPayoutAmount(amount: number, seed = 1): { parts: number[]; 
 
 export function payoutWindow(monthKey: string): PayoutWindow {
   const [y, m] = monthKey.split('-').map(Number)
-  const start = new Date(y, m - 1, 20)
+  const start = new Date(y, m - 1, 18)
   const end = new Date(y, m, 16)
   const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
   const days: string[] = []
@@ -898,6 +904,7 @@ function planRows(
   timeTo: string,
   events: CashEvent[],
   minGap: number,
+  amountsBySourceRow: Record<number, number[]> = {},
 ): RowPlan[] {
   const windowWorkdays = win.days.filter(isSlovenianWorkday)
   const dayIndex = new Map(windowWorkdays.map((d, i) => [d, i]))
@@ -905,7 +912,11 @@ function planRows(
 
   return rows.map((row) => {
     const employee = matchEmployee(row, employees)
-    const split = splitPayoutAmount(row.amount, row.rowNo)
+    const manualAmounts = amountsBySourceRow[row.rowNo]
+    const hasManualSplit = Array.isArray(manualAmounts) && manualAmounts.length > 0
+    const split = hasManualSplit
+      ? { parts: manualAmounts.map((amount) => round2(Number.isFinite(amount) ? amount : 0)), split: manualAmounts.length > 1 }
+      : splitPayoutAmount(row.amount, row.rowNo)
     const bounds = employeeBounds(employee, potrdila, win)
     const boundaryByDate = new Map(bounds.map((b) => [b.date, b]))
     const eligibleDays = employeeEligibleBusinessDays(employee, potrdila, win)
@@ -918,7 +929,9 @@ function planRows(
     if (split.split) {
       warnings.push({
         code: 'SPLIT',
-        message: `Znesek nad ${SPLIT_THRESHOLD_EUR} € je razdeljen na ${delAcc(split.parts.length)} po ${SPLIT_MIN_EUR}–${SPLIT_MAX_EUR} €; med njimi je najmanj ${delovniDan(minGap)}.`,
+        message: hasManualSplit
+          ? `Delitev je ročno nastavljena na ${delAcc(split.parts.length)}; med deli je najmanj ${delovniDan(minGap)}.`
+          : `Znesek nad ${SPLIT_THRESHOLD_EUR} € je samodejno razdeljen na ${delAcc(split.parts.length)} po približno ${SPLIT_MIN_EUR}–${SPLIT_MAX_EUR} € in zaokrožen na 5 €; med njimi je najmanj ${delovniDan(minGap)}.`,
       })
     }
 
@@ -938,7 +951,9 @@ function planRows(
         ...base,
         items: [],
         earliestSlotAt: '',
-        blockReason: `Znesek ${formatEur(row.amount)} se razdeli na ${izdatekAcc(split.parts.length)} po ${SPLIT_MIN_EUR}–${SPLIT_MAX_EUR} €, v obdobju ${formatSloDate(win.start)}–${formatSloDate(win.end)} pa je ob razmiku ${delovniDan(minGap)} prostora le za ${izdatekAcc(maxPartsInWindow)}. Vnesite datum, uro in Zadevo ročno ali razdelite znesek na več obdobij.`,
+        blockReason: hasManualSplit
+          ? `Ročna delitev vsebuje ${izdatekAcc(split.parts.length)}, v obdobju ${formatSloDate(win.start)}–${formatSloDate(win.end)} pa je ob razmiku ${delovniDan(minGap)} prostora le za ${izdatekAcc(maxPartsInWindow)}. Zmanjšajte število delov ali razdelite znesek na več obdobij.`
+          : `Znesek ${formatEur(row.amount)} se razdeli na ${izdatekAcc(split.parts.length)} po ${SPLIT_MIN_EUR}–${SPLIT_MAX_EUR} €, v obdobju ${formatSloDate(win.start)}–${formatSloDate(win.end)} pa je ob razmiku ${delovniDan(minGap)} prostora le za ${izdatekAcc(maxPartsInWindow)}. Vnesite datum, uro in Zadevo ročno ali razdelite znesek na več obdobij.`,
       }
     }
 
@@ -1084,7 +1099,7 @@ export function buildPayoutParts(
   const minGap = options.minGapWorkdays ?? MIN_GAP_WORKDAYS
   const defaultSubject = (options.defaultSubject ?? 'Akontacija').trim() || 'Akontacija'
   const events = context?.events ?? []
-  const plans = planRows(rows, employees, potrdila, win, timeFrom, timeTo, events, minGap)
+  const plans = planRows(rows, employees, potrdila, win, timeFrom, timeTo, events, minGap, options.amountsBySourceRow)
 
   // Try a few row orderings and keep the one that leaves the least money
   // unscheduled. A single greedy pass in file order can starve later rows of
@@ -1235,6 +1250,7 @@ export function validatePayoutSchedule(
     }
     if (!p.subject || !p.subject.trim()) add(p.partKey, 'Zadeva je prazna — vpišite jo pred uvozom.')
     if (!p.employee) add(p.partKey, 'Zaposleni ni enolično najden v seznamu zaposlenih.')
+    if (!Number.isFinite(p.amount) || p.amount <= 0) add(p.partKey, 'Znesek mora biti večji od 0 €.')
   }
 
   // Rule 2: parts of the same source row must be at least `minGap` WORKDAYS apart.
@@ -1245,6 +1261,12 @@ export function validatePayoutSchedule(
     groups.set(p.sourceRow, group)
   }
   for (const group of groups.values()) {
+    const sourceTotal = round2(group[0]?.originalAmount ?? 0)
+    const splitTotal = round2(group.reduce((sum, p) => sum + (Number.isFinite(p.amount) ? p.amount : 0), 0))
+    if (Math.abs(splitTotal - sourceTotal) > EPS) {
+      const message = `Vsota delov mora biti enaka izvornemu znesku ${formatEur(sourceTotal)} (trenutno ${formatEur(splitTotal)}).`
+      for (const p of group) add(p.partKey, message)
+    }
     if (group.length < 2) continue
     const ordered = group
       .filter((p) => isoDateToUtc(p.date))

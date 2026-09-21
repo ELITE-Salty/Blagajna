@@ -496,7 +496,7 @@ export function MonthWorkspace({
         <input className={cx(inputCls, 'w-56')} placeholder="Išči (namen, zaposleni, znesek, št.)" value={search} onChange={(e) => setSearch(e.target.value)} />
         <div className="flex-1" />
         {!actionIsClosed && actionDeskId && (
-          <Btn onClick={() => setShowPayoutImport(true)} title="Ločen uvoz akontacij; uvoz zaposlenih ostaja v zavihku Zaposleni.">⇧ Uvoz akontacij (Excel/CSV)</Btn>
+          <Btn onClick={() => setShowPayoutImport(true)} title="Uvoz dodatkov akontacij iz Excel/CSV; uvoz zaposlenih ostaja v zavihku Zaposleni.">⇧ Akontacije dodatki za {monthLabel(month)}</Btn>
         )}
         {/*<Btn kind="violet" onClick={() => setShowTransfer(true)} title="Interni prenos gotovine med blagajnami; brez BP/BI. Gumb je vedno viden na zaslonu Blagajna.">↔ Interni prenos</Btn>*/}
         {!actionIsClosed && actionDeskId && (
