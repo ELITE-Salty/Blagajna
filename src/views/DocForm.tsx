@@ -238,6 +238,61 @@ function DocFormInner({
     onClose()
   }
 
+  async function prepareQrSigning() {
+    setErr('')
+    if (cancelled || app.mode !== 'server') return
+    try {
+      // Pri osnutku najprej shranimo trenutno stanje obrazca in ga sinhroniziramo,
+      // da javna QR stran vedno prikaže točno podatke, ki jih uporabnik vidi na PC-ju.
+      if (editable) {
+        const emp = employees.find((e) => e.id === d.employeeId)
+        if (desks.find((x) => x.id === d.deskId)?.isGroup) {
+          setErr('Globalna blagajna je samo skupni pregled. Izberite konkretno interno lokacijo (npr. Pisarna ali Direktor).')
+          return
+        }
+        const monthKey = monthKeyOf(d.transactionDate)
+        const close = await db.closes.get(closeIdFor(settings, d.deskId, monthKey))
+        if (close) {
+          setErr(`Mesec ${monthLabel(monthKey)} je za to blagajno že zaključen — dokumenta ni mogoče poslati v podpis.`)
+          return
+        }
+        if (!d.transactionDate || !d.transactionTime || !d.employeeId || d.amount == null || d.amount <= 0 || !d.deskId) {
+          setErr('Pred QR podpisom izpolnite blagajno, datum, čas, zaposlenega in veljaven znesek.')
+          return
+        }
+        if (settings.requirePurpose !== false && !d.purpose.trim()) {
+          setErr('Pred QR podpisom izpolnite namen (Za).')
+          return
+        }
+        if (d.type === 'BI') {
+          const cover = await checkBiCover(db, { id: d.id, type: d.type, deskId: d.deskId, amount: d.amount, status: d.status })
+          if (cover) { setErr(cover); return }
+        }
+
+        const now = nowIso()
+        const rec: CashDocument = {
+          ...d,
+          employeeName: emp?.displayName ?? d.employeeName,
+          monthKey,
+          amountWordsOverride: overrideWords ? d.amountWordsOverride : '',
+          syncStatus: 'LOKALNO',
+          updatedAt: now,
+          updatedBy: app.userLabel,
+          ...(isNew && !d.createdAt ? { createdAt: now, createdBy: app.userLabel } : {}),
+        }
+        await db.docs.put(rec)
+        setD({ ...rec, rows: rec.rows.map((r) => ({ ...r })) })
+        await app.audit('Osnutek shranjen pred QR podpisom', 'BlagajniskiDokument', rec.id,
+          `${rec.type} · ${rec.employeeName || 'brez zaposlenega'} · ${rec.amount != null ? fmtEur(rec.amount) : 'brez zneska'}`)
+        await app.syncNow()
+      }
+
+      setQrSigning(true)
+    } catch (e: any) {
+      setErr(`QR podpisa ni mogoče pripraviti: ${String(e?.message ?? e)}`)
+    }
+  }
+
   async function savePostCloseMeta(patch: Partial<CashDocument>, auditMsg: string) {
     await db.docs.update(d.id, { ...patch, syncStatus: 'LOKALNO', updatedAt: nowIso(), updatedBy: app.userLabel })
     setD((p) => ({ ...p, ...patch }))
@@ -297,7 +352,7 @@ function DocFormInner({
             <Btn kind="danger" onClick={() => setStorno(true)}>Storno / popravek</Btn>
           )}
           <div className="flex-1" />
-          {finalized && !cancelled && app.mode === 'server' && <Btn onClick={() => setQrSigning(true)}>📱 QR podpis</Btn>}
+          {!cancelled && app.mode === 'server' && <Btn onClick={() => { void prepareQrSigning() }}>📱 QR podpis</Btn>}
           <Btn onClick={() => onPrint({ title: numberLabel, docs: [{ doc: d, desk: desks.find((x) => x.id === d.deskId) }] })}>🖨️ Natisni</Btn>
           <Btn onClick={onClose}>Zapri</Btn>
           {editable && <Btn kind="primary" onClick={save}>Shrani</Btn>}

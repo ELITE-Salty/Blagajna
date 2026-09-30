@@ -183,7 +183,9 @@ sicer se ob izgubi uporabniki zgolj znova prijavijo.)
 
 ## Podpisovanje prek QR kode
 
-Za zaključen in oštevilčen BP/BI je v dokumentu na voljo **QR podpis**. Uporabnik izbere eno ali več podpisnih vlog, aplikacija pa ustvari naključno povezavo z veljavnostjo 30 minut. Povezava je vezana samo na izbrani dokument in izbrana podpisna polja. Ko so vsi izbrani podpisi oddani, se javna povezava takoj zaklene; uporabnik jo lahko pred tem tudi ročno prekliče.
+**QR podpis** je na voljo že na odprtem osnutku BP/BI, torej še preden dokument ob zaključku meseca dobi uradno številko. Ob kliku aplikacija osnutek najprej shrani in sinhronizira s strežnikom, nato uporabnik izbere eno ali več podpisnih vlog in ustvari naključno povezavo z veljavnostjo 30 minut. Enaka možnost ostane na voljo tudi po zaključku/oštevilčenju dokumenta. Povezava je vezana samo na izbrani dokument in izbrana podpisna polja. Ko so vsi izbrani podpisi oddani, se javna povezava takoj zaklene; uporabnik jo lahko pred tem tudi ročno prekliče.
+
+Na osnutku je obrazec na tablici jasno označen z **OSNUTEK · BREZ URADNE ŠTEVILKE**. Zbrani podpisi ostanejo na istem dokumentu in se ohranijo, ko kasnejši zaključek meseca dodeli uradno BP/BI številko.
 
 Na tablici se prikaže dejanski obrazec BP/BI. Izbrana podpisna mesta so označena in jih je mogoče tapniti; podpisna ploščica podpira prst, miško in pisalo/S Pen. Priponke se na javno podpisno stran ne pošiljajo — prikazana so samo njihova imena na obrazcu.
 

@@ -1,15 +1,17 @@
 # QR podpisovanje BP/BI — 30. 9. 2026
 
-Dodano podpisovanje zaključenih in oštevilčenih blagajniških dokumentov prek začasne QR povezave.
+Dodano podpisovanje blagajniških dokumentov prek začasne QR povezave. QR podpis je na voljo že na odprtem osnutku, še preden dokument dobi uradno številko, in ostane na voljo tudi po zaključku/oštevilčenju.
 
 ## Potek
 
-1. V zaključenem BP/BI kliknite **QR podpis**.
+1. V odprtem osnutku ali zaključenem BP/BI kliknite **QR podpis**. Pri osnutku aplikacija trenutne podatke najprej samodejno shrani in sinhronizira s strežnikom.
 2. Izberite eno ali več podpisnih vlog. Pri BP je privzeto predlagan **Vplačal**, pri BI **Prejel** (če polje še ni podpisano).
 3. Kliknite **Ustvari QR kodo (30 min)**.
 4. Oseba na Samsung tablici skenira QR, pregleda dejanski obrazec BP/BI in tapne označeno podpisno mesto.
 5. Podpiše se s S Penom, prstom ali miško in potrdi podpis.
 6. Če je bilo izbranih več polj, ista povezava vodi skozi preostala polja. Po zadnjem podpisu se javna povezava takoj zaklene.
+
+Če je dokument še osnutek, je predogled na tablici označen **OSNUTEK · BREZ URADNE ŠTEVILKE**. Podpisi se shranijo na isti dokument in ostanejo na njem tudi po kasnejšem zaključku meseca in dodelitvi uradne številke.
 
 ## Varnost
 

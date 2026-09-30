@@ -277,10 +277,10 @@ app.post('/api/signing-sessions', auth, async (req, res) => {
   const docRec = await store.getRecord('docs', String(docId || ''))
   if (!docRec || docRec.deleted) return res.status(404).json({ error: 'Dokument ne obstaja.' })
   const doc = docRec.json
-  if (doc.status !== 'ZAKLJUCEN' || doc.officialNumber == null) {
-    return res.status(409).json({ error: 'QR podpis je na voljo za zaključene in oštevilčene dokumente.' })
-  }
   if (doc.status === 'STORNIRAN') return res.status(409).json({ error: 'Storniranega dokumenta ni mogoče poslati v podpis.' })
+  if (doc.status !== 'ODPRT' && doc.status !== 'ZAKLJUCEN') {
+    return res.status(409).json({ error: 'Dokument ni na voljo za QR podpis.' })
+  }
   const allowed = new Set(SIGN_ROLES[doc.type] || [])
   const existing = new Set((doc.signatures || []).map((x) => x.role))
   const roles = [...new Set(Array.isArray(req.body?.roles) ? req.body.roles.map(String) : [])]
@@ -337,6 +337,8 @@ app.get('/api/sign/:token', async (req, res) => {
   const docRec = await store.getRecord('docs', session.docId)
   if (!docRec || docRec.deleted) return res.status(404).json({ error: 'Dokument ne obstaja več.' })
   const doc = docRec.json
+  if (doc.status === 'STORNIRAN') return res.status(410).json({ error: 'Dokument je bil storniran in ni več na voljo za podpis.' })
+  if (doc.status !== 'ODPRT' && doc.status !== 'ZAKLJUCEN') return res.status(409).json({ error: 'Dokument ni več na voljo za podpis.' })
   const desk = (await store.getRecord('desks', doc.deskId))?.json ?? null
   const settings = await getSettings()
   const signedRoles = [...new Set([...(session.signedRoles || []), ...(doc.signatures || []).filter((s) => session.roles.includes(s.role)).map((s) => s.role)])]
@@ -371,7 +373,7 @@ app.post('/api/sign/:token/signature', async (req, res) => {
       const docRec = await s.getRecord('docs', session.docId)
       if (!docRec || docRec.deleted) { const e = new Error('Dokument ne obstaja.'); e.status = 404; throw e }
       const doc = docRec.json
-      if (doc.status !== 'ZAKLJUCEN') { const e = new Error('Dokument ni več na voljo za podpis.'); e.status = 409; throw e }
+      if (doc.status !== 'ODPRT' && doc.status !== 'ZAKLJUCEN') { const e = new Error('Dokument ni več na voljo za podpis.'); e.status = 409; throw e }
       const already = (doc.signatures || []).find((x) => x.role === role)
       if (already) {
         if ((session.signedRoles || []).includes(role)) return { session, already: true, signature: already }

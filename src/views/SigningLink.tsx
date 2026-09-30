@@ -115,6 +115,9 @@ export function SigningLinkModal({
 
   const state = status?.status ?? 'ACTIVE'
   const remaining = session ? timeLeft(session.expiresAt) : ''
+  const documentLabel = doc.officialNumber != null
+    ? docNo(doc.type, doc.officialNumber, doc.seqYear, app.settings.numberFormat, doc.monthKey)
+    : `${doc.type} · osnutek brez uradne številke`
   void nowTick
 
   return (
@@ -165,7 +168,7 @@ export function SigningLinkModal({
           </div>
           <div>
             <div className="text-sm font-semibold text-slate-700">Čakam na podpis</div>
-            <div className="text-[12px] text-slate-500 mt-1">Dokument: {docNo(doc.type, doc.officialNumber, doc.seqYear, app.settings.numberFormat, doc.monthKey)}</div>
+            <div className="text-[12px] text-slate-500 mt-1">Dokument: {documentLabel}</div>
             <div className="mt-3 space-y-2">
               {session.roles.map((role) => {
                 const done = status?.signedRoles.includes(role)
