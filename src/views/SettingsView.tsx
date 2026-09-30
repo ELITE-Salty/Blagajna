@@ -9,6 +9,7 @@ import { Btn, Chip, ErrBox, Field, Modal, Warn, inputCls } from '../components/u
 import { apiCreateUser, apiUpdateUser, apiUsers, type AppUser } from '../lib/api'
 import { putDesk, updateDesk } from '../lib/persist'
 import { descendantLocationIds } from '../lib/desks'
+import { TabletSettings } from './TabletSigning'
 
 export function SettingsView() {
   const app = useApp()
@@ -62,6 +63,8 @@ export function SettingsView() {
           {savedMsg && <span className="text-emerald-600 text-sm font-medium">{savedMsg}</span>}
         </div>
       </section>
+
+      <TabletSettings />
 
       {/* Blagajne */}
       <section className="rounded-lg border border-slate-200 bg-white p-4">

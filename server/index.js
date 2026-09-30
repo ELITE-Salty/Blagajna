@@ -270,6 +270,210 @@ const publicBaseUrl = (req) => {
   return configured || `${req.protocol}://${req.get('host')}`
 }
 
+const tabletTokenKey = (token) => createHash('sha256').update(`tablet:${String(token)}`).digest('hex')
+const tabletPairKey = (token) => createHash('sha256').update(`tablet-pair:${String(token)}`).digest('hex')
+const tabletPairState = (pairing) => {
+  if (pairing.claimedAt) return 'PAIRED'
+  if (Date.now() >= new Date(pairing.expiresAt).getTime()) return 'EXPIRED'
+  return 'PENDING'
+}
+const tabletJobState = (job) => job.cancelledAt ? 'CANCELLED' : job.completedAt ? 'COMPLETED' : job.openedAt ? 'OPEN' : 'WAITING'
+const tabletPublicDevice = (d) => ({ id: d.id, name: d.name, pairedAt: d.pairedAt, lastSeenAt: d.lastSeenAt || null, revokedAt: d.revokedAt || null })
+const tabletPublicJob = (j) => ({
+  id: j.id, docId: j.docId, tabletId: j.tabletId, roles: j.roles, signedRoles: j.signedRoles || [],
+  status: tabletJobState(j), createdAt: j.createdAt, completedAt: j.completedAt || null, cancelledAt: j.cancelledAt || null,
+})
+const tabletDocLabel = (doc) => doc.officialNumber != null
+  ? `${doc.type}-${doc.monthKey || String(doc.seqYear || '').padStart(4, '0')}-${String(doc.officialNumber).padStart(4, '0')}`
+  : `${doc.type} · osnutek`
+
+async function tabletAuth(req, res, next) {
+  const token = String(req.headers['x-tablet-token'] || '')
+  if (!token) return res.status(401).json({ error: 'Tablica ni povezana z Blagajno.' })
+  const rec = await store.getRecord('tablet_devices', tabletTokenKey(token))
+  if (!rec || rec.deleted || rec.json.revokedAt) return res.status(401).json({ error: 'Povezava tablice ni več veljavna.' })
+  req.tablet = rec.json
+  req.tabletTokenKey = tabletTokenKey(token)
+  next()
+}
+
+// ---------------- stalna podpisna tablica ----------------
+app.post('/api/tablets/pairing', auth, async (req, res) => {
+  const token = randomBytes(24).toString('base64url')
+  const id = tabletPairKey(token)
+  const createdAt = nowIso()
+  const expiresAt = new Date(Date.now() + 10 * 60_000).toISOString()
+  const pairing = { id, createdAt, expiresAt, createdBy: req.user.name, claimedAt: null, deviceId: null }
+  await store.putRecord('tablet_pairings', id, pairing, createdAt)
+  await store.addAudit({ id: uuid(), at: createdAt, user: req.user.name, role: req.user.role, action: 'Ustvarjeno povezovanje podpisne tablice', entity: 'PodpisnaTablica', entityId: id, details: 'QR velja 10 minut' })
+  res.json({ id, url: `${publicBaseUrl(req)}/tablet/pair/${token}`, expiresAt })
+})
+
+app.get('/api/tablets/pairing/:id', auth, async (req, res) => {
+  const rec = await store.getRecord('tablet_pairings', req.params.id)
+  if (!rec || rec.deleted) return res.status(404).json({ error: 'Povezovanje tablice ne obstaja.' })
+  const pairing = rec.json
+  const state = tabletPairState(pairing)
+  let device = null
+  if (pairing.deviceId) {
+    const d = await store.getRecord('tablet_devices', pairing.deviceId)
+    if (d && !d.deleted) device = tabletPublicDevice(d.json)
+  }
+  res.json({ id: pairing.id, status: state, expiresAt: pairing.expiresAt, device })
+})
+
+app.get('/api/tablets', auth, async (_req, res) => {
+  const tablets = (await store.listTable('tablet_devices')).filter((d) => !d.revokedAt).map(tabletPublicDevice).sort((a, b) => a.name.localeCompare(b.name))
+  res.json({ tablets })
+})
+
+app.delete('/api/tablets/:id', auth, async (req, res) => {
+  const rec = await store.getRecord('tablet_devices', req.params.id)
+  if (!rec || rec.deleted) return res.status(404).json({ error: 'Tablica ne obstaja.' })
+  const at = nowIso()
+  const d = { ...rec.json, revokedAt: at }
+  await store.putRecord('tablet_devices', d.id, d, at)
+  await store.addAudit({ id: uuid(), at, user: req.user.name, role: req.user.role, action: 'Odstranjena podpisna tablica', entity: 'PodpisnaTablica', entityId: d.id, details: d.name })
+  res.json({ ok: true })
+})
+
+app.post('/api/tablet/pair/:token', async (req, res) => {
+  const pairRec = await store.getRecord('tablet_pairings', tabletPairKey(req.params.token))
+  if (!pairRec || pairRec.deleted) return res.status(404).json({ error: 'QR za povezovanje ni veljaven.' })
+  const pairing = pairRec.json
+  const state = tabletPairState(pairing)
+  if (state === 'EXPIRED') return res.status(410).json({ error: 'QR za povezovanje je potekel.' })
+  if (state === 'PAIRED') return res.status(409).json({ error: 'Ta QR je bil že uporabljen.' })
+  const deviceToken = randomBytes(32).toString('base64url')
+  const id = tabletTokenKey(deviceToken)
+  const at = nowIso()
+  const device = { id, name: String(req.body?.name || 'Podpisna tablica').trim().slice(0, 80) || 'Podpisna tablica', pairedAt: at, lastSeenAt: at, revokedAt: null, pairedBy: pairing.createdBy }
+  await store.tx(async (s) => {
+    const fresh = await s.getRecord('tablet_pairings', pairing.id)
+    if (!fresh || fresh.deleted || tabletPairState(fresh.json) !== 'PENDING') { const e = new Error('QR za povezovanje ni več veljaven.'); e.status = 409; throw e }
+    await s.putRecord('tablet_devices', id, device, at)
+    await s.putRecord('tablet_pairings', pairing.id, { ...fresh.json, claimedAt: at, deviceId: id }, at)
+    await s.addAudit({ id: uuid(), at, user: device.name, role: 'TABLICA', action: 'Podpisna tablica povezana', entity: 'PodpisnaTablica', entityId: id, details: `Povezovanje ustvaril ${pairing.createdBy}` })
+  })
+  res.json({ tabletToken: deviceToken, device: tabletPublicDevice(device) })
+})
+
+app.post('/api/tablet-jobs', auth, async (req, res) => {
+  const docId = String(req.body?.docId || '')
+  const tabletId = String(req.body?.tabletId || '')
+  const docRec = await store.getRecord('docs', docId)
+  if (!docRec || docRec.deleted) return res.status(404).json({ error: 'Dokument ne obstaja.' })
+  const doc = docRec.json
+  if (doc.status === 'STORNIRAN' || (doc.status !== 'ODPRT' && doc.status !== 'ZAKLJUCEN')) return res.status(409).json({ error: 'Dokument ni na voljo za podpis.' })
+  const tabletRec = await store.getRecord('tablet_devices', tabletId)
+  if (!tabletRec || tabletRec.deleted || tabletRec.json.revokedAt) return res.status(404).json({ error: 'Izbrana tablica ni povezana.' })
+  const allowed = new Set(SIGN_ROLES[doc.type] || [])
+  const existing = new Set((doc.signatures || []).map((x) => x.role))
+  const roles = [...new Set(Array.isArray(req.body?.roles) ? req.body.roles.map(String) : [])].filter((r) => allowed.has(r) && !existing.has(r))
+  if (!roles.length) return res.status(400).json({ error: 'Izberite vsaj eno nepodpisano podpisno polje.' })
+  const at = nowIso()
+  const job = { id: uuid(), docId, tabletId, roles, signedRoles: [], createdAt: at, createdBy: req.user.name, createdByRole: req.user.role, openedAt: null, completedAt: null, cancelledAt: null }
+  await store.putRecord('tablet_jobs', job.id, job, at)
+  await store.addAudit({ id: uuid(), at, user: req.user.name, role: req.user.role, action: 'Dokument poslan na podpisno tablico', entity: 'BlagajniskiDokument', entityId: docId, details: `${tabletRec.json.name} · ${roles.map((r) => SIGN_ROLE_LABELS[r] || r).join(', ')}` })
+  res.json(tabletPublicJob(job))
+})
+
+app.get('/api/tablet-jobs/:id', auth, async (req, res) => {
+  const rec = await store.getRecord('tablet_jobs', req.params.id)
+  if (!rec || rec.deleted) return res.status(404).json({ error: 'Zahteva za podpis ne obstaja.' })
+  res.json(tabletPublicJob(rec.json))
+})
+
+app.delete('/api/tablet-jobs/:id', auth, async (req, res) => {
+  const rec = await store.getRecord('tablet_jobs', req.params.id)
+  if (!rec || rec.deleted) return res.status(404).json({ error: 'Zahteva za podpis ne obstaja.' })
+  const job = rec.json
+  if (!job.completedAt && !job.cancelledAt) {
+    const at = nowIso()
+    job.cancelledAt = at
+    await store.putRecord('tablet_jobs', job.id, job, at)
+    await store.addAudit({ id: uuid(), at, user: req.user.name, role: req.user.role, action: 'Preklican podpis na tablici', entity: 'BlagajniskiDokument', entityId: job.docId, details: '' })
+  }
+  res.json(tabletPublicJob(job))
+})
+
+app.get('/api/tablet/inbox', tabletAuth, async (req, res) => {
+  const at = nowIso()
+  const device = { ...req.tablet, lastSeenAt: at }
+  await store.putRecord('tablet_devices', device.id, device, at)
+  const all = await store.listTable('tablet_jobs')
+  const active = all.filter((j) => j.tabletId === device.id && !j.cancelledAt && !j.completedAt)
+  const jobs = []
+  for (const j of active) {
+    const docRec = await store.getRecord('docs', j.docId)
+    if (!docRec || docRec.deleted || docRec.json.status === 'STORNIRAN') continue
+    const d = docRec.json
+    jobs.push({ id: j.id, docId: j.docId, type: d.type, documentLabel: tabletDocLabel(d), employeeName: d.employeeName || '', amount: d.amount ?? null, roles: j.roles, signedRoles: j.signedRoles || [], status: tabletJobState(j), createdAt: j.createdAt })
+  }
+  jobs.sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+  res.setHeader('Cache-Control', 'no-store')
+  res.json({ device: tabletPublicDevice(device), jobs })
+})
+
+app.get('/api/tablet/jobs/:id', tabletAuth, async (req, res) => {
+  const rec = await store.getRecord('tablet_jobs', req.params.id)
+  if (!rec || rec.deleted || rec.json.tabletId !== req.tablet.id) return res.status(404).json({ error: 'Dokument ni v čakalni vrsti te tablice.' })
+  const job = rec.json
+  if (job.cancelledAt) return res.status(410).json({ error: 'Zahteva za podpis je bila preklicana.' })
+  if (job.completedAt) return res.status(410).json({ error: 'Podpisovanje je že zaključeno.' })
+  const docRec = await store.getRecord('docs', job.docId)
+  if (!docRec || docRec.deleted) return res.status(404).json({ error: 'Dokument ne obstaja več.' })
+  const doc = docRec.json
+  if (doc.status === 'STORNIRAN') return res.status(410).json({ error: 'Dokument je bil storniran.' })
+  const at = nowIso()
+  if (!job.openedAt) { job.openedAt = at; await store.putRecord('tablet_jobs', job.id, job, at) }
+  const desk = (await store.getRecord('desks', doc.deskId))?.json ?? null
+  const settings = await getSettings()
+  const signedRoles = [...new Set([...(job.signedRoles || []), ...(doc.signatures || []).filter((s) => job.roles.includes(s.role)).map((s) => s.role)])]
+  const publicDoc = { ...doc, employeeId: '', attachments: (doc.attachments || []).map((a) => ({ id: a.id, name: a.name, mime: a.mime, dataUrl: '', addedAt: a.addedAt })) }
+  res.setHeader('Cache-Control', 'no-store')
+  res.json({ job: tabletPublicJob(job), requestedRoles: job.roles, signedRoles, doc: publicDoc, desk, settings })
+})
+
+app.post('/api/tablet/jobs/:id/signature', tabletAuth, async (req, res) => {
+  const { role, signerName, dataUrl } = req.body || {}
+  if (!String(signerName || '').trim()) return res.status(400).json({ error: 'Vnesite ime in priimek podpisnika.' })
+  if (!String(dataUrl || '').startsWith('data:image/png;base64,') || String(dataUrl).length > 1_500_000) return res.status(400).json({ error: 'Podpis ni v veljavnem formatu ali je prevelik.' })
+  try {
+    const result = await store.tx(async (s) => {
+      const rec = await s.getRecord('tablet_jobs', req.params.id)
+      if (!rec || rec.deleted || rec.json.tabletId !== req.tablet.id) { const e = new Error('Zahteva za podpis ne obstaja.'); e.status = 404; throw e }
+      const job = rec.json
+      if (job.cancelledAt) { const e = new Error('Zahteva za podpis je bila preklicana.'); e.status = 410; throw e }
+      if (job.completedAt) { const e = new Error('Podpisovanje je že zaključeno.'); e.status = 409; throw e }
+      if (!job.roles.includes(role)) { const e = new Error('To podpisno polje ni zahtevano.'); e.status = 403; throw e }
+      const docRec = await s.getRecord('docs', job.docId)
+      if (!docRec || docRec.deleted) { const e = new Error('Dokument ne obstaja.'); e.status = 404; throw e }
+      const doc = docRec.json
+      if (doc.status !== 'ODPRT' && doc.status !== 'ZAKLJUCEN') { const e = new Error('Dokument ni več na voljo za podpis.'); e.status = 409; throw e }
+      const already = (doc.signatures || []).find((x) => x.role === role)
+      if (already) {
+        if ((job.signedRoles || []).includes(role)) return { job, signature: already }
+        const e = new Error('To polje je medtem že podpisano.'); e.status = 409; throw e
+      }
+      const signedAt = nowIso()
+      const sig = { role, signerName: String(signerName).trim(), type: 'DIGITALNO', dataUrl, signedAt, capturedBy: `Podpisna tablica · ${req.tablet.name}` }
+      const updatedDoc = { ...doc, signatures: [...(doc.signatures || []), sig], ...(role === 'PREJEL' ? { prejelStatus: 'DIGITALNO' } : {}), updatedAt: signedAt, updatedBy: `${sig.signerName} (tablica)`, syncStatus: 'SINHRONIZIRANO' }
+      await s.putRecord('docs', doc.id, updatedDoc, signedAt)
+      job.signedRoles = [...new Set([...(job.signedRoles || []), role])]
+      if (job.roles.every((r) => job.signedRoles.includes(r))) job.completedAt = signedAt
+      await s.putRecord('tablet_jobs', job.id, job, signedAt)
+      await s.addAudit({ id: uuid(), at: signedAt, user: `${sig.signerName} (tablica)`, role: job.createdByRole, action: 'Podpis na povezani tablici', entity: 'BlagajniskiDokument', entityId: doc.id, details: `${SIGN_ROLE_LABELS[role] || role} · ${req.tablet.name}` })
+      return { job, signature: sig }
+    })
+    res.json({ ok: true, status: result.job.completedAt ? 'COMPLETED' : 'OPEN', signedRoles: result.job.signedRoles || [], signature: result.signature })
+  } catch (e) {
+    if (e?.status) return res.status(e.status).json({ error: e.message })
+    console.error('[tablet-signature]', e)
+    res.status(500).json({ error: 'Podpisa ni bilo mogoče shraniti.' })
+  }
+})
+
 app.post('/api/signing-sessions', auth, async (req, res) => {
   const { docId } = req.body || {}
   const minutesRaw = Number(req.body?.expiresInMinutes ?? 30)

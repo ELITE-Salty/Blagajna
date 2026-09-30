@@ -13,12 +13,17 @@ import { AuditView } from './views/AuditView'
 import { DocForm } from './views/DocForm'
 import { PrintOverlay, type PrintJob } from './print'
 import { PublicSigningPage } from './views/SigningLink'
+import { TabletInboxPage, TabletPairPage } from './views/TabletSigning'
 
 type Tab = 'blagajna' | 'potrdila' | 'porocila' | 'zaposleni' | 'nastavitve' | 'revizija'
 
 export default function App() {
-  const signingMatch = typeof window !== 'undefined' ? window.location.pathname.match(/^\/sign\/([^/]+)\/?$/) : null
+  const path = typeof window !== 'undefined' ? window.location.pathname : ''
+  const signingMatch = path.match(/^\/sign\/([^/]+)\/?$/)
+  const tabletPairMatch = path.match(/^\/tablet\/pair\/([^/]+)\/?$/)
   if (signingMatch) return <PublicSigningPage token={decodeURIComponent(signingMatch[1])} />
+  if (tabletPairMatch) return <TabletPairPage token={decodeURIComponent(tabletPairMatch[1])} />
+  if (/^\/tablet\/?$/.test(path)) return <TabletInboxPage />
   return (
     <AppProvider>
       <Shell />

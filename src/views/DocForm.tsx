@@ -16,7 +16,7 @@ import { Btn, Chip, ErrBox, Field, Modal, SignaturePad, Warn, inputCls } from '.
 import type { PrintJob } from '../print'
 import { emptyDoc } from '../db'
 import { EmployeeEdit } from './Employees'
-import { SigningLinkModal } from './SigningLink'
+import { SendToTabletModal } from './TabletSigning'
 
 
 type EmployeeNameLike = {
@@ -134,7 +134,7 @@ function DocFormInner({
   const [overrideWords, setOverrideWords] = useState(!!doc.amountWordsOverride)
   const [err, setErr] = useState('')
   const [signRole, setSignRole] = useState<string | null>(null)
-  const [qrSigning, setQrSigning] = useState(false)
+  const [tabletSigning, setTabletSigning] = useState(false)
   const [storno, setStorno] = useState(false)
   const [newEmp, setNewEmp] = useState(false)
   const [attachmentIndex, setAttachmentIndex] = useState<number | null>(null)
@@ -238,12 +238,12 @@ function DocFormInner({
     onClose()
   }
 
-  async function prepareQrSigning() {
+  async function prepareTabletSigning() {
     setErr('')
     if (cancelled || app.mode !== 'server') return
     try {
       // Pri osnutku najprej shranimo trenutno stanje obrazca in ga sinhroniziramo,
-      // da javna QR stran vedno prikaže točno podatke, ki jih uporabnik vidi na PC-ju.
+      // da podpisna tablica vedno prikaže točno podatke, ki jih uporabnik vidi na PC-ju.
       if (editable) {
         const emp = employees.find((e) => e.id === d.employeeId)
         if (desks.find((x) => x.id === d.deskId)?.isGroup) {
@@ -257,11 +257,11 @@ function DocFormInner({
           return
         }
         if (!d.transactionDate || !d.transactionTime || !d.employeeId || d.amount == null || d.amount <= 0 || !d.deskId) {
-          setErr('Pred QR podpisom izpolnite blagajno, datum, čas, zaposlenega in veljaven znesek.')
+          setErr('Pred pošiljanjem na tablico izpolnite blagajno, datum, čas, zaposlenega in veljaven znesek.')
           return
         }
         if (settings.requirePurpose !== false && !d.purpose.trim()) {
-          setErr('Pred QR podpisom izpolnite namen (Za).')
+          setErr('Pred pošiljanjem na tablico izpolnite namen (Za).')
           return
         }
         if (d.type === 'BI') {
@@ -282,14 +282,14 @@ function DocFormInner({
         }
         await db.docs.put(rec)
         setD({ ...rec, rows: rec.rows.map((r) => ({ ...r })) })
-        await app.audit('Osnutek shranjen pred QR podpisom', 'BlagajniskiDokument', rec.id,
+        await app.audit('Osnutek shranjen pred pošiljanjem na tablico', 'BlagajniskiDokument', rec.id,
           `${rec.type} · ${rec.employeeName || 'brez zaposlenega'} · ${rec.amount != null ? fmtEur(rec.amount) : 'brez zneska'}`)
         await app.syncNow()
       }
 
-      setQrSigning(true)
+      setTabletSigning(true)
     } catch (e: any) {
-      setErr(`QR podpisa ni mogoče pripraviti: ${String(e?.message ?? e)}`)
+      setErr(`Pošiljanja na tablico ni mogoče pripraviti: ${String(e?.message ?? e)}`)
     }
   }
 
@@ -352,7 +352,7 @@ function DocFormInner({
             <Btn kind="danger" onClick={() => setStorno(true)}>Storno / popravek</Btn>
           )}
           <div className="flex-1" />
-          {!cancelled && app.mode === 'server' && <Btn onClick={() => { void prepareQrSigning() }}>📱 QR podpis</Btn>}
+          {!cancelled && app.mode === 'server' && <Btn onClick={() => { void prepareTabletSigning() }}>📲 Pošlji na tablico</Btn>}
           <Btn onClick={() => onPrint({ title: numberLabel, docs: [{ doc: d, desk: desks.find((x) => x.id === d.deskId) }] })}>🖨️ Natisni</Btn>
           <Btn onClick={onClose}>Zapri</Btn>
           {editable && <Btn kind="primary" onClick={save}>Shrani</Btn>}
@@ -646,10 +646,10 @@ function DocFormInner({
         </Modal>
       )}
 
-      {qrSigning && (
-        <SigningLinkModal
+      {tabletSigning && (
+        <SendToTabletModal
           doc={d}
-          onClose={() => setQrSigning(false)}
+          onClose={() => setTabletSigning(false)}
           onDocumentUpdated={(fresh) => setD({ ...fresh, rows: fresh.rows.map((r) => ({ ...r })) })}
         />
       )}

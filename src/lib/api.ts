@@ -127,3 +127,100 @@ export const apiSubmitPublicSignature = (token: string, role: string, signerName
   publicApiFetch(`/api/sign/${encodeURIComponent(token)}/signature`, {
     method: 'POST', body: JSON.stringify({ role, signerName, dataUrl }),
   }) as Promise<{ ok: true; status: 'ACTIVE' | 'COMPLETED'; signedRoles: string[]; signature: any }>
+
+export interface PairedTablet {
+  id: string
+  name: string
+  pairedAt: string
+  lastSeenAt?: string | null
+  revokedAt?: string | null
+}
+
+export interface TabletPairingCreated {
+  id: string
+  url: string
+  expiresAt: string
+}
+
+export interface TabletPairingStatus {
+  id: string
+  status: 'PENDING' | 'PAIRED' | 'EXPIRED'
+  expiresAt: string
+  device?: PairedTablet | null
+}
+
+export interface TabletJobCreated {
+  id: string
+  docId: string
+  tabletId: string
+  roles: string[]
+  signedRoles: string[]
+  status: 'WAITING' | 'OPEN' | 'COMPLETED' | 'CANCELLED'
+  createdAt: string
+  completedAt?: string | null
+  cancelledAt?: string | null
+}
+
+export interface TabletInboxItem {
+  id: string
+  docId: string
+  type: 'BP' | 'BI'
+  documentLabel: string
+  employeeName: string
+  amount: number | null
+  roles: string[]
+  signedRoles: string[]
+  status: 'WAITING' | 'OPEN'
+  createdAt: string
+}
+
+export interface TabletJobPayload {
+  job: TabletJobCreated
+  requestedRoles: string[]
+  signedRoles: string[]
+  doc: any
+  desk: any
+  settings: any
+}
+
+export const apiCreateTabletPairing = () =>
+  apiFetch('/api/tablets/pairing', { method: 'POST' }) as Promise<TabletPairingCreated>
+
+export const apiTabletPairingStatus = (id: string) =>
+  apiFetch(`/api/tablets/pairing/${encodeURIComponent(id)}`) as Promise<TabletPairingStatus>
+
+export const apiTablets = () =>
+  apiFetch('/api/tablets') as Promise<{ tablets: PairedTablet[] }>
+
+export const apiRevokeTablet = (id: string) =>
+  apiFetch(`/api/tablets/${encodeURIComponent(id)}`, { method: 'DELETE' }) as Promise<{ ok: true }>
+
+export const apiCreateTabletJob = (docId: string, roles: string[], tabletId: string) =>
+  apiFetch('/api/tablet-jobs', { method: 'POST', body: JSON.stringify({ docId, roles, tabletId }) }) as Promise<TabletJobCreated>
+
+export const apiTabletJobStatus = (id: string) =>
+  apiFetch(`/api/tablet-jobs/${encodeURIComponent(id)}`) as Promise<TabletJobCreated>
+
+export const apiCancelTabletJob = (id: string) =>
+  apiFetch(`/api/tablet-jobs/${encodeURIComponent(id)}`, { method: 'DELETE' }) as Promise<TabletJobCreated>
+
+export const apiClaimTabletPairing = (pairToken: string, name = 'Podpisna tablica') =>
+  publicApiFetch(`/api/tablet/pair/${encodeURIComponent(pairToken)}`, { method: 'POST', body: JSON.stringify({ name }) }) as Promise<{ tabletToken: string; device: PairedTablet }>
+
+function tabletApiFetch(path: string, tabletToken: string, opts: RequestInit = {}): Promise<any> {
+  return publicApiFetch(path, {
+    ...opts,
+    headers: { ...(opts.headers as any), 'X-Tablet-Token': tabletToken },
+  })
+}
+
+export const apiTabletInbox = (tabletToken: string) =>
+  tabletApiFetch('/api/tablet/inbox', tabletToken) as Promise<{ device: PairedTablet; jobs: TabletInboxItem[] }>
+
+export const apiTabletOpenJob = (tabletToken: string, id: string) =>
+  tabletApiFetch(`/api/tablet/jobs/${encodeURIComponent(id)}`, tabletToken) as Promise<TabletJobPayload>
+
+export const apiSubmitTabletSignature = (tabletToken: string, id: string, role: string, signerName: string, dataUrl: string) =>
+  tabletApiFetch(`/api/tablet/jobs/${encodeURIComponent(id)}/signature`, tabletToken, {
+    method: 'POST', body: JSON.stringify({ role, signerName, dataUrl }),
+  }) as Promise<{ ok: true; status: 'OPEN' | 'COMPLETED'; signedRoles: string[]; signature: any }>

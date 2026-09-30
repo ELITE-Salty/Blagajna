@@ -231,3 +231,7 @@ docker compose up -d --build --force-recreate
 
 Nato v brskalniku naredite trdi refresh (`Ctrl+Shift+R` oziroma `Cmd+Shift+R`).
 V v4 je gumb **↔ Interni prenos** v modrem bloku hierarhije in tudi v vrstici akcij nad tabelo, kadar ima ista glavna blagajna vsaj dve aktivni interni blagajni.
+
+## Stalna podpisna tablica
+
+Za podpisno tablico nastavite `PUBLIC_BASE_URL` na HTTPS naslov aplikacije, ki je dosegljiv s Samsung tablice. V Blagajni nato odprite **Nastavitve → Podpisna tablica → Poveži novo tablico** in na tablici enkrat skenirajte povezovalni QR. Po povezavi pustite na tablici odprto stran `/tablet`; novi dokumenti se v čakalni vrsti osvežujejo samodejno. Za namensko napravo je priporočljivo v Androidu/Samsung One UI uporabiti pripenjanje aplikacije oziroma kiosk način, da uporabnik ostane na podpisni strani.
