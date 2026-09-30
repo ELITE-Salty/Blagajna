@@ -16,6 +16,7 @@ import { Btn, Chip, ErrBox, Field, Modal, SignaturePad, Warn, inputCls } from '.
 import type { PrintJob } from '../print'
 import { emptyDoc } from '../db'
 import { EmployeeEdit } from './Employees'
+import { SigningLinkModal } from './SigningLink'
 
 
 type EmployeeNameLike = {
@@ -133,6 +134,7 @@ function DocFormInner({
   const [overrideWords, setOverrideWords] = useState(!!doc.amountWordsOverride)
   const [err, setErr] = useState('')
   const [signRole, setSignRole] = useState<string | null>(null)
+  const [qrSigning, setQrSigning] = useState(false)
   const [storno, setStorno] = useState(false)
   const [newEmp, setNewEmp] = useState(false)
   const [attachmentIndex, setAttachmentIndex] = useState<number | null>(null)
@@ -269,7 +271,7 @@ function DocFormInner({
   }
 
   const numberLabel = d.officialNumber != null
-    ? docNo(d.type, d.officialNumber, d.seqYear, settings.numberFormat)
+    ? docNo(d.type, d.officialNumber, d.seqYear, settings.numberFormat, d.monthKey)
     : 'Osnutek — brez uradne številke'
 
   const title = (
@@ -295,6 +297,7 @@ function DocFormInner({
             <Btn kind="danger" onClick={() => setStorno(true)}>Storno / popravek</Btn>
           )}
           <div className="flex-1" />
+          {finalized && !cancelled && app.mode === 'server' && <Btn onClick={() => setQrSigning(true)}>📱 QR podpis</Btn>}
           <Btn onClick={() => onPrint({ title: numberLabel, docs: [{ doc: d, desk: desks.find((x) => x.id === d.deskId) }] })}>🖨️ Natisni</Btn>
           <Btn onClick={onClose}>Zapri</Btn>
           {editable && <Btn kind="primary" onClick={save}>Shrani</Btn>}
@@ -588,6 +591,14 @@ function DocFormInner({
         </Modal>
       )}
 
+      {qrSigning && (
+        <SigningLinkModal
+          doc={d}
+          onClose={() => setQrSigning(false)}
+          onDocumentUpdated={(fresh) => setD({ ...fresh, rows: fresh.rows.map((r) => ({ ...r })) })}
+        />
+      )}
+
       {signRole && (
         <SignaturePad
           title={SIGNATURE_ROLE_LABELS[signRole]}
@@ -661,7 +672,7 @@ export function StornoModal({ doc, onClose, onDone }: { doc: CashDocument; onClo
           transactionDate: todayIso(), transactionTime: nowTime(), monthKey: todayIso().slice(0, 7),
           employeeId: doc.employeeId, employeeName: doc.employeeName,
           amount: doc.amount, paymentMethod: doc.paymentMethod,
-          purpose: `Popravek ${docNo(doc.type, doc.officialNumber, doc.seqYear, settings.numberFormat)}: ${doc.purpose}`,
+          purpose: `Popravek ${docNo(doc.type, doc.officialNumber, doc.seqYear, settings.numberFormat, doc.monthKey)}: ${doc.purpose}`,
           rows: doc.rows.map((r) => ({ ...r })),
           correctionOfId: doc.id,
           createdBy: app.userLabel, updatedBy: app.userLabel,
@@ -687,7 +698,7 @@ export function StornoModal({ doc, onClose, onDone }: { doc: CashDocument; onClo
     >
       {err && <div className="mb-2"><ErrBox>{err}</ErrBox></div>}
       <p className="text-sm text-slate-600">
-        Uradna številka <b>{docNo(doc.type, doc.officialNumber, doc.seqYear, settings.numberFormat)}</b> ostane rezervirana,
+        Uradna številka <b>{docNo(doc.type, doc.officialNumber, doc.seqYear, settings.numberFormat, doc.monthKey)}</b> ostane rezervirana,
         dokument bo vidno označen kot STORNIRAN. Številke se nikoli tiho ne spreminjajo.
       </p>
       <div className="mt-3">

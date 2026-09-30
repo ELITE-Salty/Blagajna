@@ -8,7 +8,7 @@ import { sortChrono } from '../lib/numbering'
 import { locationIdsForView } from '../lib/desks'
 import { Btn, Chip, Warn, inputCls } from '../components/ui'
 import type { KnjigaJob, PrintJob } from '../print'
-import { downloadXlsx, excelDateSerial, XLSX_STYLE, type XlsxCell, type XlsxWorkbook } from '../lib/xlsx'
+import { buildXlsx, buildZip, downloadXlsx, excelDateSerial, XLSX_STYLE, type XlsxCell, type XlsxWorkbook } from '../lib/xlsx'
 
 function csvCell(value: unknown): string {
   const s = String(value ?? '')
@@ -17,6 +17,58 @@ function csvCell(value: unknown): string {
 
 function csvNum(value: number): string {
   return fmtNum(value)
+}
+
+const utf8 = new TextEncoder()
+
+function safeFileName(value: string): string {
+  const cleaned = String(value || 'datoteka')
+    .normalize('NFKD')
+    .replace(/[\\/:*?"<>|]+/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return cleaned || 'datoteka'
+}
+
+function extensionForMime(mime: string): string {
+  const known: Record<string, string> = {
+    'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp', 'image/gif': '.gif',
+    'application/pdf': '.pdf', 'text/plain': '.txt',
+  }
+  return known[mime] || ''
+}
+
+function attachmentFileName(name: string, mime: string): string {
+  const safe = safeFileName(name || 'priloga')
+  return /\.[a-z0-9]{1,8}$/i.test(safe) ? safe : safe + extensionForMime(mime)
+}
+
+function dataUrlToBytes(dataUrl: string): Uint8Array {
+  const comma = dataUrl.indexOf(',')
+  if (comma < 0) return utf8.encode(dataUrl)
+  const meta = dataUrl.slice(0, comma)
+  const payload = dataUrl.slice(comma + 1)
+  if (/;base64/i.test(meta)) {
+    const binary = atob(payload)
+    const out = new Uint8Array(binary.length)
+    for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i)
+    return out
+  }
+  return utf8.encode(decodeURIComponent(payload))
+}
+
+function downloadZip(bytes: Uint8Array, filename: string): void {
+  const blobBytes = new Uint8Array(bytes.length)
+  blobBytes.set(bytes)
+  const blob = new Blob([blobBytes.buffer], { type: 'application/zip' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 5000)
 }
 
 function employeeSurname(e: any): string {
@@ -102,7 +154,7 @@ export function ReportsView({
   }, [rows])
 
   const deskOf = (id: string) => desks.find((x) => x.id === id)
-  const numOf = (d: CashDocument) => (d.officialNumber != null ? docNo(d.type, d.officialNumber, d.seqYear, settings.numberFormat) : 'osnutek')
+  const numOf = (d: CashDocument) => (d.officialNumber != null ? docNo(d.type, d.officialNumber, d.seqYear, settings.numberFormat, d.monthKey) : 'osnutek')
   const toggle = (id: string) => setSel((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n })
   const allSelected = rows.length > 0 && rows.every((d) => sel.has(d.id))
   const exportRows = sel.size > 0 ? rows.filter((d) => sel.has(d.id)) : rows
@@ -200,6 +252,111 @@ export function ReportsView({
     await app.audit('Izvoz v Excel (.xlsx)', 'Porocilo', `${from}..${to}`, `${exportRows.length} vrstic`)
   }
 
+  async function exportAccountingPackage() {
+    const numberedRows = exportRows.filter((d) => d.officialNumber != null && d.seqYear != null)
+    if (numberedRows.length === 0) {
+      alert('Za paket za računovodstvo ni nobenega uradno oštevilčenega dokumenta. Najprej zaključite mesec ali izberite drugo obdobje.')
+      return
+    }
+
+    const header = ['Številka', 'Datum', 'Čas', 'Tip', 'Blagajna', 'Zaposleni', 'Za (namen)', 'Konto', 'Prejemek (EUR)', 'Izdatek (EUR)', 'Status', 'Opombe', 'Št. prilog', 'Datoteke prilog']
+    const rowsXlsx: XlsxCell[][] = [
+      [{ value: 'Paket za računovodstvo', style: XLSX_STYLE.TITLE }],
+      [{ value: `Obdobje: ${fmtDate(from)} – ${fmtDate(to)} · samo uradno oštevilčeni dokumenti`, style: XLSX_STYLE.SUBTITLE }],
+      [],
+      header.map((value) => ({ value, style: XLSX_STYLE.HEADER })),
+    ]
+
+    const zipFiles: Array<{ name: string; data: Uint8Array }> = []
+    const manifestLines = [[
+      'Številka', 'Datum', 'Tip', 'Blagajna', 'Zaposleni', 'Znesek (EUR)', 'Status', 'Pot priloge',
+    ].join(';')]
+    let attachmentCount = 0
+
+    for (let i = 0; i < numberedRows.length; i++) {
+      const d = numberedRows[i]
+      const number = numOf(d)
+      const alt = i % 2 === 1
+      const base = alt ? XLSX_STYLE.BODY_ALT : XLSX_STYLE.BODY
+      const dateStyle = alt ? XLSX_STYLE.DATE_ALT : XLSX_STYLE.DATE
+      const inStyle = alt ? XLSX_STYLE.MONEY_IN_ALT : XLSX_STYLE.MONEY_IN
+      const outStyle = alt ? XLSX_STYLE.MONEY_OUT_ALT : XLSX_STYLE.MONEY_OUT
+      const statusText = d.status === 'STORNIRAN' ? 'STORNIRANO' : 'zaključen'
+      const statusStyle = d.status === 'STORNIRAN' ? XLSX_STYLE.STATUS_VOID : XLSX_STYLE.STATUS_CLOSED
+      const paths: string[] = []
+      const deskCode = deskOf(d.deskId)?.code ?? d.deskId
+      const attachmentFolder = `${safeFileName(number)}__${safeFileName(deskCode)}`
+
+      for (let j = 0; j < (d.attachments ?? []).length; j++) {
+        const att = d.attachments[j]
+        const fileName = `${String(j + 1).padStart(2, '0')}-${attachmentFileName(att.name, att.mime)}`
+        const path = `priloge/${attachmentFolder}/${fileName}`
+        try {
+          zipFiles.push({ name: path, data: dataUrlToBytes(att.dataUrl) })
+          paths.push(path)
+          attachmentCount++
+        } catch {
+          const errorPath = `priloge/${attachmentFolder}/${String(j + 1).padStart(2, '0')}-NAPAKA.txt`
+          zipFiles.push({ name: errorPath, data: utf8.encode(`Priloge »${att.name}« ni bilo mogoče pretvoriti za izvoz.`) })
+          paths.push(errorPath)
+        }
+      }
+
+      rowsXlsx.push([
+        { value: number, style: base },
+        { value: excelDateSerial(d.transactionDate) ?? d.transactionDate, style: dateStyle },
+        { value: d.transactionTime || '', style: base },
+        { value: d.type, style: d.type === 'BP' ? XLSX_STYLE.TYPE_BP : XLSX_STYLE.TYPE_BI },
+        { value: deskOf(d.deskId)?.name ?? d.deskId, style: base },
+        { value: d.employeeName || '', style: base },
+        { value: d.purpose || '', style: base },
+        { value: (d.rows ?? []).map((r) => r.konto).filter(Boolean).join(', '), style: base },
+        { value: d.type === 'BP' ? (d.amount ?? 0) : null, style: inStyle },
+        { value: d.type === 'BI' ? (d.amount ?? 0) : null, style: outStyle },
+        { value: statusText, style: statusStyle },
+        { value: d.notes || '', style: base },
+        { value: d.attachments?.length ?? 0, style: base },
+        { value: paths.join(' | '), style: base },
+      ])
+
+      const baseManifest = [
+        csvCell(number), csvCell(fmtDate(d.transactionDate)), csvCell(d.type),
+        csvCell(deskOf(d.deskId)?.name ?? d.deskId), csvCell(d.employeeName || ''),
+        csvCell(fmtNum(d.amount ?? 0)), csvCell(statusText),
+      ]
+      if (paths.length === 0) manifestLines.push([...baseManifest, ''].join(';'))
+      else for (const path of paths) manifestLines.push([...baseManifest, csvCell(path)].join(';'))
+    }
+
+    const accountingBook: XlsxWorkbook = {
+      title: `Računovodstvo ${from}–${to}`,
+      subject: 'Uradno oštevilčeni blagajniški dokumenti s seznamom prilog',
+      creator: 'Blagajna BLU',
+      company: settings.company.name,
+      sheets: [{
+        name: 'Dokumenti', rows: rowsXlsx,
+        widths: [21, 13, 9, 8, 22, 24, 34, 18, 18, 18, 15, 30, 11, 48],
+        merges: ['A1:N1', 'A2:N2'], freezeRows: 4,
+        autoFilter: `A4:N${rowsXlsx.length}`, showGridLines: false, landscape: true,
+        rowHeights: { 1: 28, 4: 30 },
+      }],
+    }
+
+    zipFiles.unshift(
+      { name: `blagajna-${from}-do-${to}.xlsx`, data: buildXlsx(accountingBook) },
+      { name: 'manifest-prilog.csv', data: utf8.encode('\uFEFF' + manifestLines.join('\r\n')) },
+      { name: 'PREBERI-ME.txt', data: utf8.encode(
+        `Paket za računovodstvo\r\nObdobje: ${fmtDate(from)} – ${fmtDate(to)}\r\n` +
+        `Dokumenti: ${numberedRows.length}\r\nPriloge: ${attachmentCount}\r\n\r\n` +
+        `Excel vsebuje uradne številke dokumentov. Mapa »priloge« je organizirana po uradni številki in šifri blagajne (da se datoteke ne prepišejo pri številčenju po blagajnah). ` +
+        `Datoteka manifest-prilog.csv povezuje vsak dokument s potjo do njegove priloge.\r\n`,
+      ) },
+    )
+
+    downloadZip(buildZip(zipFiles), `racunovodstvo-${from}-do-${to}.zip`)
+    await app.audit('Izvoz paketa za računovodstvo (ZIP)', 'Porocilo', `${from}..${to}`, `${numberedRows.length} dokumentov · ${attachmentCount} prilog`)
+  }
+
   async function exportTransfersCsv() {
     const head = ['Datum', 'Čas', 'Iz blagajne', 'V blagajno', 'Znesek (EUR)', 'Opomba']
     const lines = [head.join(';')]
@@ -294,6 +451,7 @@ export function ReportsView({
         <h1 className="text-lg font-semibold text-slate-800">Poročila in izvoz</h1>
         <div className="flex-1" />
         <Btn onClick={exportExcel} title="Pravi Excel .xlsx z oblikovanjem, filtri in povzetkom">⬇️ Izvozi Excel (.xlsx){sel.size > 0 ? ` — izbrane (${sel.size})` : ''}</Btn>
+        <Btn kind="primary" onClick={exportAccountingPackage} title="ZIP za računovodstvo: uradno oštevilčeni dokumenti + Excel + skenirane priloge">📦 Paket za računovodstvo (.zip)</Btn>
         <Btn onClick={exportTransfersCsv} disabled={transferRows.length === 0} title="Izvozi interne prenose za izbrano obdobje in blagajno v CSV">⬇️ Prenosi CSV ({transferRows.length})</Btn>
         <Btn onClick={printSelected} disabled={sel.size === 0} title="Natisne izbrane dokumente kot obrazce BP/BI">🖨️ Natisni izbrane ({sel.size})</Btn>
         <Btn kind="primary" onClick={printKnjiga} disabled={!deskId || !!selectedDesk?.isGroup} title={selectedDesk?.isGroup ? 'Za klasično blagajniško knjigo izberite eno interno lokacijo.' : deskId ? 'Klasična blagajniška knjiga s tekočim saldom' : 'Izberite eno blagajno'}>📒 Blagajniška knjiga</Btn>

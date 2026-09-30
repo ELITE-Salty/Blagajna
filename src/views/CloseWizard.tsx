@@ -115,8 +115,8 @@ export function CloseWizard({
       {total === 0 && <Warn>V tem mesecu ni dokumentov za številčenje. Zaključek bo mesec le zaklenil.</Warn>}
 
       <div className="grid md:grid-cols-2 gap-4 mt-2">
-        <PreviewTable label="Blagajniški prejemki (BP)" rows={preview.bp} last={preview.lastBp} year={monthKey.slice(0, 4)} onOpenDoc={onOpenDoc} />
-        <PreviewTable label="Blagajniški izdatki (BI)" rows={preview.bi} last={preview.lastBi} year={monthKey.slice(0, 4)} onOpenDoc={onOpenDoc} />
+        <PreviewTable label="Blagajniški prejemki (BP)" rows={preview.bp} last={preview.lastBp} monthKey={monthKey} onOpenDoc={onOpenDoc} />
+        <PreviewTable label="Blagajniški izdatki (BI)" rows={preview.bi} last={preview.lastBi} monthKey={monthKey} onOpenDoc={onOpenDoc} />
       </div>
 
       <div className="mt-4 text-[12px] text-slate-500">
@@ -139,13 +139,15 @@ export function CloseWizard({
   )
 }
 
+const settingsNumberFormat = 'DASH' as const
+
 function PreviewTable({
-  label, rows, last, year, onOpenDoc,
+  label, rows, last, monthKey, onOpenDoc,
 }: {
   label: string
   rows: { doc: any; number: number }[]
   last: number
-  year: string
+  monthKey: string
   onOpenDoc: (id: string) => void
 }) {
   return (
@@ -167,7 +169,7 @@ function PreviewTable({
           {rows.length === 0 && <tr><td colSpan={4} className="px-2 py-2 text-slate-400">ni dokumentov</td></tr>}
           {rows.map(({ doc, number }) => (
             <tr key={doc.id} className="border-t border-slate-100 hover:bg-blu-50/50 cursor-pointer" onClick={() => onOpenDoc(doc.id)}>
-              <td className="px-2 py-1 font-mono font-semibold">{number}</td>
+              <td className="px-2 py-1 font-mono font-semibold">{docNo(doc.type, number, Number(monthKey.slice(0, 4)), settingsNumberFormat, monthKey)}</td>
               <td className="px-2 py-1 font-mono text-[12px]">{fmtDateTime(`${doc.transactionDate}T${doc.transactionTime}`)}</td>
               <td className="px-2 py-1">{doc.employeeName}</td>
               <td className="px-2 py-1 text-right font-mono">{fmtEur(doc.amount)}</td>
@@ -176,7 +178,7 @@ function PreviewTable({
         </tbody>
       </table>
       {rows.length > 0 && (
-        <div className="text-[11px] text-slate-400 mt-1">→ {rows[0].number}–{rows[rows.length - 1].number}/{year}</div>
+        <div className="text-[11px] text-slate-400 mt-1">→ {docNo(rows[0].doc.type, rows[0].number, Number(monthKey.slice(0, 4)), settingsNumberFormat, monthKey)} – {docNo(rows[rows.length - 1].doc.type, rows[rows.length - 1].number, Number(monthKey.slice(0, 4)), settingsNumberFormat, monthKey)}</div>
       )}
     </div>
   )
@@ -240,7 +242,7 @@ export function ManifestView({
             .sort((a, b) => a.type.localeCompare(b.type) || a.number - b.number)
             .map((m) => (
               <tr key={m.docId} className="border-t border-slate-100">
-                <td className="px-2 py-1 font-mono font-semibold">{docNo(m.type, m.number, close.year, settings.numberFormat)}</td>
+                <td className="px-2 py-1 font-mono font-semibold">{docNo(m.type, m.number, close.year, settings.numberFormat, close.monthKey)}</td>
                 <td className="px-2 py-1 font-mono text-[12px]">{fmtDateTime(m.transactionAt)}</td>
                 <td className="px-2 py-1">{m.employeeName}</td>
                 <td className="px-2 py-1 text-right font-mono">{fmtEur(m.amount)}</td>

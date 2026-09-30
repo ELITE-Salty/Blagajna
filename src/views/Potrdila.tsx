@@ -109,7 +109,7 @@ export function PotrdilaView({
                       : linked.map((d) => (
                           <button key={d.id} className="mr-1 mb-0.5" onClick={() => onOpenDoc(d.id)}>
                             <Chip tone={d.type === 'BP' ? 'green' : 'red'}>
-                              {d.officialNumber != null ? docNo(d.type, d.officialNumber, d.seqYear, app.settings.numberFormat) : `${d.type} osnutek`} · {fmtEur(d.amount)}
+                              {d.officialNumber != null ? docNo(d.type, d.officialNumber, d.seqYear, app.settings.numberFormat, d.monthKey) : `${d.type} osnutek`} · {fmtEur(d.amount)}
                             </Chip>
                           </button>
                         ))}
@@ -326,7 +326,7 @@ function PotrdiloFormInner({
                 <span className="font-mono text-[12px]">{fmtDate(d.transactionDate)} {d.transactionTime}</span>
                 <span className="flex-1 text-left truncate">{d.purpose || '—'}</span>
                 <span className="font-mono">{fmtEur(d.amount)}</span>
-                <span className="font-mono text-[12px] font-semibold">{d.officialNumber != null ? docNo(d.type, d.officialNumber, d.seqYear, settings.numberFormat) : 'osnutek'}</span>
+                <span className="font-mono text-[12px] font-semibold">{d.officialNumber != null ? docNo(d.type, d.officialNumber, d.seqYear, settings.numberFormat, d.monthKey) : 'osnutek'}</span>
               </button>
             ))}
           </div>

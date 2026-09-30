@@ -538,7 +538,7 @@ export function MonthWorkspace({
                 <tr key={d.id} className={cx('border-t border-slate-100 align-middle', problems.length > 0 && 'bg-red-50/60', d.status === 'STORNIRAN' && 'opacity-60')} title={problems.join('; ')}>
                   <td className="px-2 py-1 font-mono text-[12px] font-semibold whitespace-nowrap">
                     {d.officialNumber != null
-                      ? docNo(d.type, d.officialNumber, d.seqYear, settings.numberFormat)
+                      ? docNo(d.type, d.officialNumber, d.seqYear, settings.numberFormat, d.monthKey)
                       : <span className="text-amber-600 font-sans font-normal text-[11px]">osnutek</span>}
                   </td>
                   <td className="px-1 py-0.5">

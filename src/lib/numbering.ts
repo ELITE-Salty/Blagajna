@@ -44,14 +44,9 @@ export async function docsInScope(db: BlagajnaDB, s: Settings, deskId: string, m
   )
 }
 
-/** Zadnje dodeljene številke v letu za dani obseg (iz že zaključenih mesecev). */
-export async function lastNumbers(db: BlagajnaDB, s: Settings, deskId: string, year: number) {
-  const scope = scopeKeyFor(s, deskId)
-  const closes = (await db.closes.toArray()).filter((c) => c.scopeKey === scope && c.year === year)
-  return {
-    bp: closes.reduce((m, c) => Math.max(m, c.bpEnd), 0),
-    bi: closes.reduce((m, c) => Math.max(m, c.biEnd), 0),
-  }
+/** Mesečno številčenje: vsak BP in BI se v novem mesecu začne pri 1. */
+export async function lastNumbers(_db: BlagajnaDB, _s: Settings, _deskId: string, _monthKey: string) {
+  return { bp: 0, bi: 0 }
 }
 
 export interface PreviewRow {
@@ -72,7 +67,6 @@ export interface ClosePreview {
 export async function computePreview(
   db: BlagajnaDB, s: Settings, deskId: string, monthKey: string,
 ): Promise<ClosePreview> {
-  const year = parseInt(monthKey.slice(0, 4), 10)
   const alreadyClosed = (await getClose(db, s, deskId, monthKey)) ?? null
   const docs = (await docsInScope(db, s, deskId, monthKey)).filter((d) => d.status === 'ODPRT')
   const issues = docs
@@ -86,7 +80,7 @@ export async function computePreview(
     ...transferScope.filter((t) => t.syncStatus === 'LOKALNO'),
   ]
   const valid = docs.filter((d) => docProblems(d, s.requirePurpose).length === 0)
-  const { bp: lastBp, bi: lastBi } = await lastNumbers(db, s, deskId, year)
+  const { bp: lastBp, bi: lastBi } = await lastNumbers(db, s, deskId, monthKey)
   const bpDocs = valid.filter((d) => d.type === 'BP').sort(sortChrono)
   const biDocs = valid.filter((d) => d.type === 'BI').sort(sortChrono)
   return {
@@ -132,9 +126,9 @@ export async function closeMonth(
     }
 
     const scope = scopeKeyFor(s, deskId)
-    const closes = (await db.closes.toArray()).filter((c) => c.scopeKey === scope && c.year === year)
-    const lastBp = closes.reduce((m, c) => Math.max(m, c.bpEnd), 0)
-    const lastBi = closes.reduce((m, c) => Math.max(m, c.biEnd), 0)
+    // Zaporedji BP in BI se vsak mesec začneta pri 1.
+    const lastBp = 0
+    const lastBi = 0
 
     const bpDocs = docs.filter((d) => d.type === 'BP').sort(sortChrono)
     const biDocs = docs.filter((d) => d.type === 'BI').sort(sortChrono)

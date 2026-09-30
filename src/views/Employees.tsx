@@ -307,7 +307,7 @@ function EmployeeDetail({
                 <span className="flex-1 text-left truncate">{d.purpose || '—'}</span>
                 <span className="font-mono">{fmtEur(d.amount)}</span>
                 {d.status === 'STORNIRAN' && <Chip tone="red">storno</Chip>}
-                <span className="font-mono text-[11px] text-slate-500">{d.officialNumber != null ? docNo(d.type, d.officialNumber, d.seqYear, app.settings.numberFormat) : 'osnutek'}</span>
+                <span className="font-mono text-[11px] text-slate-500">{d.officialNumber != null ? docNo(d.type, d.officialNumber, d.seqYear, app.settings.numberFormat, d.monthKey) : 'osnutek'}</span>
               </button>
             ))}
             {docs.length === 0 && <div className="text-sm text-slate-400">Ni dokumentov.</div>}

@@ -12,10 +12,13 @@ import { SettingsView } from './views/SettingsView'
 import { AuditView } from './views/AuditView'
 import { DocForm } from './views/DocForm'
 import { PrintOverlay, type PrintJob } from './print'
+import { PublicSigningPage } from './views/SigningLink'
 
 type Tab = 'blagajna' | 'potrdila' | 'porocila' | 'zaposleni' | 'nastavitve' | 'revizija'
 
 export default function App() {
+  const signingMatch = typeof window !== 'undefined' ? window.location.pathname.match(/^\/sign\/([^/]+)\/?$/) : null
+  if (signingMatch) return <PublicSigningPage token={decodeURIComponent(signingMatch[1])} />
   return (
     <AppProvider>
       <Shell />
@@ -44,7 +47,7 @@ function Shell() {
           await db.docs.update(d.id, { prejelStatus: 'NATISNJENO', syncStatus: 'LOKALNO' })
           item.doc = { ...d, prejelStatus: 'NATISNJENO' }
         }
-        await app.audit('Dokument natisnjen', 'BlagajniskiDokument', d.id, docNo(d.type, d.officialNumber, d.seqYear, settings.numberFormat))
+        await app.audit('Dokument natisnjen', 'BlagajniskiDokument', d.id, docNo(d.type, d.officialNumber, d.seqYear, settings.numberFormat, d.monthKey))
       }
     }
     for (const p of job.potrdila ?? []) {
@@ -142,7 +145,7 @@ function Shell() {
         </main>
 
         <footer className="max-w-[1200px] mx-auto px-4 pb-6 text-[11px] text-slate-400">
-          Blagajna · Blu Logistics — 1. faza (lokalna različica brez strežnika). Uradne številke nastanejo šele ob zaključku meseca, kronološko po času transakcije. BP in BI imata ločeni zaporedji, ponastavitev vsako leto.
+          Blagajna · Blu Logistics — 1. faza (lokalna različica brez strežnika). Uradne številke nastanejo šele ob zaključku meseca, kronološko po času transakcije. BP in BI imata ločeni mesečni zaporedji, ki se vsak mesec začneta pri 0001.
         </footer>
 
         {/* Modali */}

@@ -280,7 +280,7 @@ function dosDateTime(d = new Date()): { time: number; date: number } {
   }
 }
 
-function makeZip(files: Array<{ name: string; data: Uint8Array }>): Uint8Array {
+export function buildZip(files: Array<{ name: string; data: Uint8Array }>): Uint8Array {
   const localParts: Uint8Array[] = []
   const centralParts: Uint8Array[] = []
   let offset = 0
@@ -317,7 +317,7 @@ export function buildXlsx(book: XlsxWorkbook): Uint8Array {
     { name: 'xl/styles.xml', data: encoder.encode(stylesXml()) },
   ]
   book.sheets.forEach((sheet, i) => files.push({ name: `xl/worksheets/sheet${i + 1}.xml`, data: encoder.encode(worksheetXml(sheet)) }))
-  return makeZip(files)
+  return buildZip(files)
 }
 
 export function excelDateSerial(iso: string): number | null {
@@ -329,7 +329,9 @@ export function excelDateSerial(iso: string): number | null {
 
 export function downloadXlsx(book: XlsxWorkbook, filename: string): void {
   const bytes = buildXlsx(book)
-  const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+  const blobBytes = new Uint8Array(bytes.length)
+  blobBytes.set(bytes)
+  const blob = new Blob([blobBytes.buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url

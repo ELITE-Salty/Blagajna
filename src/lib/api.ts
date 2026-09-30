@@ -73,3 +73,57 @@ export const apiCreateUser = (u: { email: string; name: string; role: Role; pass
   apiFetch('/api/users', { method: 'POST', body: JSON.stringify(u) })
 export const apiUpdateUser = (id: string, patch: Partial<{ name: string; role: Role; password: string; active: boolean }>) =>
   apiFetch(`/api/users/${id}`, { method: 'PATCH', body: JSON.stringify(patch) })
+
+export interface SigningSessionCreated {
+  id: string
+  url: string
+  expiresAt: string
+  roles: string[]
+}
+
+export interface SigningSessionStatus {
+  id: string
+  docId: string
+  status: 'ACTIVE' | 'COMPLETED' | 'CANCELLED' | 'EXPIRED'
+  roles: string[]
+  signedRoles: string[]
+  createdAt: string
+  expiresAt: string
+  completedAt?: string | null
+  cancelledAt?: string | null
+}
+
+export interface PublicSigningPayload {
+  status: 'ACTIVE' | 'COMPLETED'
+  expiresAt: string
+  requestedRoles: string[]
+  signedRoles: string[]
+  doc: any
+  desk: any
+  settings: any
+}
+
+export const apiCreateSigningSession = (docId: string, roles: string[], expiresInMinutes = 30) =>
+  apiFetch('/api/signing-sessions', { method: 'POST', body: JSON.stringify({ docId, roles, expiresInMinutes }) }) as Promise<SigningSessionCreated>
+
+export const apiSigningSessionStatus = (id: string) =>
+  apiFetch(`/api/signing-sessions/${encodeURIComponent(id)}`) as Promise<SigningSessionStatus>
+
+export const apiCancelSigningSession = (id: string) =>
+  apiFetch(`/api/signing-sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }) as Promise<SigningSessionStatus>
+
+async function publicApiFetch(path: string, opts: RequestInit = {}): Promise<any> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json', ...(opts.headers as any) }
+  const r = await fetch(path, { ...opts, headers })
+  const j = await r.json().catch(() => ({}))
+  if (!r.ok) throw new Error(j.error || `Napaka strežnika (${r.status})`)
+  return j
+}
+
+export const apiPublicSigning = (token: string) =>
+  publicApiFetch(`/api/sign/${encodeURIComponent(token)}`) as Promise<PublicSigningPayload>
+
+export const apiSubmitPublicSignature = (token: string, role: string, signerName: string, dataUrl: string) =>
+  publicApiFetch(`/api/sign/${encodeURIComponent(token)}/signature`, {
+    method: 'POST', body: JSON.stringify({ role, signerName, dataUrl }),
+  }) as Promise<{ ok: true; status: 'ACTIVE' | 'COMPLETED'; signedRoles: string[]; signature: any }>

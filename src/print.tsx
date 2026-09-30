@@ -17,16 +17,19 @@ function Line({ label, value, mono = true, className }: { label?: string; value?
   )
 }
 
-function SigBox({ label, sig, accent }: { label: string; sig?: { signerName: string; dataUrl?: string; signedAt: string } | null; accent?: boolean }) {
-  return (
-    <div className={cx('flex-1 border-t px-1 pt-0.5 min-w-0', accent ? 'border-t-2 border-current' : 'border-current')}>
+function SigBox({ label, sig, accent, signable = false, onSign }: { label: string; sig?: { signerName: string; dataUrl?: string; signedAt: string } | null; accent?: boolean; signable?: boolean; onSign?: () => void }) {
+  const inner = (
+    <>
       <div className={cx('text-[8px] leading-3', accent && 'font-bold')}>{label}</div>
       <div className="h-9 flex items-center justify-center overflow-hidden">
-        {sig?.dataUrl ? <img src={sig.dataUrl} alt="" className="max-h-9" /> : null}
+        {sig?.dataUrl ? <img src={sig.dataUrl} alt="" className="max-h-9" /> : signable ? <span className="text-[7px] font-semibold leading-tight text-center px-1">Tapnite za podpis</span> : null}
       </div>
       {sig && <div className="text-[7px] font-mono text-center truncate">{sig.signerName} · {fmtDateTime(sig.signedAt).split(' ')[0]}</div>}
-    </div>
+    </>
   )
+  const cls = cx('flex-1 border-t px-1 pt-0.5 min-w-0', accent ? 'border-t-2 border-current' : 'border-current', signable && 'rounded-b bg-yellow-50 ring-2 ring-yellow-300 ring-offset-1')
+  if (signable && onSign) return <button type="button" className={cx(cls, 'text-left cursor-pointer hover:bg-yellow-100')} onClick={onSign}>{inner}</button>
+  return <div className={cls}>{inner}</div>
 }
 
 function Watermark({ text, color }: { text: string; color: string }) {
@@ -38,7 +41,7 @@ function Watermark({ text, color }: { text: string; color: string }) {
 }
 
 // ---------------------------------------------------------------- BP / BI
-export function PaperDoc({ doc, settings, desk, embedded = false, copyLabel }: { doc: CashDocument; settings: Settings; desk?: CashDesk; embedded?: boolean; copyLabel?: string }) {
+export function PaperDoc({ doc, settings, desk, embedded = false, copyLabel, signableRoles = [], onSignatureClick }: { doc: CashDocument; settings: Settings; desk?: CashDesk; embedded?: boolean; copyLabel?: string; signableRoles?: readonly string[]; onSignatureClick?: (role: string) => void }) {
   const isBP = doc.type === 'BP'
   const tone = isBP ? 'text-emerald-900' : 'text-orange-950'
   const border = isBP ? 'border-emerald-800' : 'border-orange-800'
@@ -46,7 +49,7 @@ export function PaperDoc({ doc, settings, desk, embedded = false, copyLabel }: {
   const title = isBP ? 'Blagajniški prejemek' : 'Blagajniški izdatek'
   const roles = isBP ? SIGNATURE_ROLES_BP : SIGNATURE_ROLES_BI
   const number = doc.officialNumber != null
-    ? docNo(doc.type, doc.officialNumber, doc.seqYear, settings.numberFormat)
+    ? docNo(doc.type, doc.officialNumber, doc.seqYear, settings.numberFormat, doc.monthKey)
     : ''
   const words = doc.amountWordsOverride || znesekZBesedo(doc.amount)
   const sigFor = (role: string) => doc.signatures.find((s) => s.role === role) ?? null
@@ -145,7 +148,7 @@ export function PaperDoc({ doc, settings, desk, embedded = false, copyLabel }: {
       {/* Podpisi */}
       <div className="mt-4 flex gap-2">
         {roles.map((r) => (
-          <SigBox key={r} label={SIGNATURE_ROLE_LABELS[r]} sig={sigFor(r)} accent={r === 'PREJEL'} />
+          <SigBox key={r} label={SIGNATURE_ROLE_LABELS[r]} sig={sigFor(r)} accent={r === 'PREJEL'} signable={signableRoles.includes(r) && !sigFor(r)} onSign={() => onSignatureClick?.(r)} />
         ))}
       </div>
 

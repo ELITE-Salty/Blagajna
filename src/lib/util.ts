@@ -141,8 +141,12 @@ export function parseAmount(s: string): number | null {
 export const txAt = (d: Pick<CashDocument, 'transactionDate' | 'transactionTime'>) =>
   `${d.transactionDate || '0000-00-00'}T${d.transactionTime || '00:00'}`
 
-export function docNo(type: DocType, num: number | null, year: number | null, format: NumberFormat): string {
+export function docNo(type: DocType, num: number | null, year: number | null, format: NumberFormat, monthKey?: string | null): string {
   if (num == null || year == null) return ''
+  const month = /^\d{4}-(\d{2})$/.exec(monthKey || '')?.[1]
+  // Nova uradna oblika: zaporedje se vodi po mesecih, zato je mesec del številke.
+  if (month) return `${type}-${year}-${month}-${String(num).padStart(4, '0')}`
+  // Fallback za stare zapise brez monthKey.
   if (format === 'DASH') return `${type}-${year}-${String(num).padStart(4, '0')}`
   return `${type} ${num}/${year}`
 }

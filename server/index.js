@@ -4,6 +4,7 @@ import express from 'express'
 import jwt from 'jsonwebtoken'
 import bcrypt from 'bcryptjs'
 import path from 'node:path'
+import { createHash, randomBytes } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { DATA_DIR, getJwtSecret, initStore, nowIso, uuid } from './db.js'
 
@@ -12,6 +13,7 @@ const PORT = parseInt(process.env.PORT || '8090', 10)
 const JWT_SECRET = getJwtSecret()
 const store = await initStore()
 const app = express()
+app.set('trust proxy', 1)
 app.use(express.json({ limit: '25mb' }))
 
 const getSettings = async (s = store) => (await s.getRecord('settings', 'main'))?.json ?? {}
@@ -230,6 +232,184 @@ app.get('/api/sync/pull', auth, async (req, res) => {
   res.json({ ...out, cursor, serverTime: nowIso() })
 })
 
+// ---------------- začasne QR povezave za podpisovanje ----------------
+const SIGN_ROLES = {
+  BP: ['PREJEL_BLAGAJNIK', 'PREIZKUSIL', 'ODOBRIL', 'VPLACAL', 'KONTIRAL', 'VKNJIZIL'],
+  BI: ['IZPLACAL_BLAGAJNIK', 'PREIZKUSIL', 'ODOBRIL', 'PREJEL', 'KONTIRAL', 'VKNJIZIL'],
+}
+const SIGN_ROLE_LABELS = {
+  PREJEL_BLAGAJNIK: 'Prejel blagajnik',
+  IZPLACAL_BLAGAJNIK: 'Izplačal blagajnik',
+  PREIZKUSIL: 'Preizkusil',
+  ODOBRIL: 'Odobril',
+  VPLACAL: 'Vplačal',
+  PREJEL: 'Prejel',
+  KONTIRAL: 'Kontiral',
+  VKNJIZIL: 'Vknjižil',
+}
+const signingKey = (token) => createHash('sha256').update(String(token)).digest('hex')
+const signingState = (session) => {
+  if (session.cancelledAt) return 'CANCELLED'
+  if (session.completedAt) return 'COMPLETED'
+  if (Date.now() >= new Date(session.expiresAt).getTime()) return 'EXPIRED'
+  return 'ACTIVE'
+}
+const signingStatus = (session) => ({
+  id: session.id,
+  docId: session.docId,
+  status: signingState(session),
+  roles: session.roles,
+  signedRoles: session.signedRoles || [],
+  createdAt: session.createdAt,
+  expiresAt: session.expiresAt,
+  completedAt: session.completedAt || null,
+  cancelledAt: session.cancelledAt || null,
+})
+const publicBaseUrl = (req) => {
+  const configured = String(process.env.PUBLIC_BASE_URL || '').trim().replace(/\/$/, '')
+  return configured || `${req.protocol}://${req.get('host')}`
+}
+
+app.post('/api/signing-sessions', auth, async (req, res) => {
+  const { docId } = req.body || {}
+  const minutesRaw = Number(req.body?.expiresInMinutes ?? 30)
+  const expiresInMinutes = Math.max(5, Math.min(120, Number.isFinite(minutesRaw) ? minutesRaw : 30))
+  const docRec = await store.getRecord('docs', String(docId || ''))
+  if (!docRec || docRec.deleted) return res.status(404).json({ error: 'Dokument ne obstaja.' })
+  const doc = docRec.json
+  if (doc.status !== 'ZAKLJUCEN' || doc.officialNumber == null) {
+    return res.status(409).json({ error: 'QR podpis je na voljo za zaključene in oštevilčene dokumente.' })
+  }
+  if (doc.status === 'STORNIRAN') return res.status(409).json({ error: 'Storniranega dokumenta ni mogoče poslati v podpis.' })
+  const allowed = new Set(SIGN_ROLES[doc.type] || [])
+  const existing = new Set((doc.signatures || []).map((x) => x.role))
+  const roles = [...new Set(Array.isArray(req.body?.roles) ? req.body.roles.map(String) : [])]
+    .filter((r) => allowed.has(r) && !existing.has(r))
+  if (!roles.length) return res.status(400).json({ error: 'Izberite vsaj eno nepodpisano podpisno polje.' })
+
+  const token = randomBytes(24).toString('base64url')
+  const id = signingKey(token)
+  const createdAt = nowIso()
+  const expiresAt = new Date(Date.now() + expiresInMinutes * 60_000).toISOString()
+  const session = {
+    id, docId: doc.id, roles, signedRoles: [], createdAt, expiresAt,
+    createdBy: req.user.name, createdByRole: req.user.role,
+    completedAt: null, cancelledAt: null,
+  }
+  await store.putRecord('signing_sessions', id, session, createdAt)
+  await store.addAudit({
+    id: uuid(), at: createdAt, user: req.user.name, role: req.user.role,
+    action: 'Ustvarjena QR povezava za podpis', entity: 'BlagajniskiDokument', entityId: doc.id,
+    details: `${roles.map((r) => SIGN_ROLE_LABELS[r] || r).join(', ')} · velja ${expiresInMinutes} min`,
+  })
+  res.json({ id, url: `${publicBaseUrl(req)}/sign/${token}`, expiresAt, roles })
+})
+
+app.get('/api/signing-sessions/:id', auth, async (req, res) => {
+  const rec = await store.getRecord('signing_sessions', req.params.id)
+  if (!rec || rec.deleted) return res.status(404).json({ error: 'Podpisna povezava ne obstaja.' })
+  res.json(signingStatus(rec.json))
+})
+
+app.delete('/api/signing-sessions/:id', auth, async (req, res) => {
+  const rec = await store.getRecord('signing_sessions', req.params.id)
+  if (!rec || rec.deleted) return res.status(404).json({ error: 'Podpisna povezava ne obstaja.' })
+  const session = rec.json
+  if (!session.cancelledAt && !session.completedAt) {
+    session.cancelledAt = nowIso()
+    await store.putRecord('signing_sessions', session.id, session, session.cancelledAt)
+    await store.addAudit({
+      id: uuid(), at: session.cancelledAt, user: req.user.name, role: req.user.role,
+      action: 'Preklicana QR povezava za podpis', entity: 'BlagajniskiDokument', entityId: session.docId, details: '',
+    })
+  }
+  res.json(signingStatus(session))
+})
+
+app.get('/api/sign/:token', async (req, res) => {
+  const rec = await store.getRecord('signing_sessions', signingKey(req.params.token))
+  if (!rec || rec.deleted) return res.status(404).json({ error: 'Povezava za podpis ni veljavna.' })
+  const session = rec.json
+  const state = signingState(session)
+  if (state === 'CANCELLED') return res.status(410).json({ error: 'Povezava za podpis je bila preklicana.' })
+  if (state === 'EXPIRED') return res.status(410).json({ error: 'Povezava za podpis je potekla.' })
+  if (state === 'COMPLETED') return res.status(410).json({ error: 'Podpisovanje je že zaključeno. Povezava ni več aktivna.' })
+  const docRec = await store.getRecord('docs', session.docId)
+  if (!docRec || docRec.deleted) return res.status(404).json({ error: 'Dokument ne obstaja več.' })
+  const doc = docRec.json
+  const desk = (await store.getRecord('desks', doc.deskId))?.json ?? null
+  const settings = await getSettings()
+  const signedRoles = [...new Set([...(session.signedRoles || []), ...(doc.signatures || []).filter((s) => session.roles.includes(s.role)).map((s) => s.role)])]
+  // Priponke na javni strani pokažemo le po imenih; vsebina skenov ni potrebna za podpis.
+  const publicDoc = {
+    ...doc,
+    employeeId: '',
+    attachments: (doc.attachments || []).map((a) => ({ id: a.id, name: a.name, mime: a.mime, dataUrl: '', addedAt: a.addedAt })),
+  }
+  res.setHeader('Cache-Control', 'no-store')
+  res.json({ status: 'ACTIVE', expiresAt: session.expiresAt, requestedRoles: session.roles, signedRoles, doc: publicDoc, desk, settings })
+})
+
+app.post('/api/sign/:token/signature', async (req, res) => {
+  const key = signingKey(req.params.token)
+  const { role, signerName, dataUrl } = req.body || {}
+  if (!String(signerName || '').trim()) return res.status(400).json({ error: 'Vnesite ime in priimek podpisnika.' })
+  if (!String(dataUrl || '').startsWith('data:image/png;base64,') || String(dataUrl).length > 1_500_000) {
+    return res.status(400).json({ error: 'Podpis ni v veljavnem formatu ali je prevelik.' })
+  }
+  try {
+    const result = await store.tx(async (s) => {
+      const rec = await s.getRecord('signing_sessions', key)
+      if (!rec || rec.deleted) { const e = new Error('Povezava za podpis ni veljavna.'); e.status = 404; throw e }
+      const session = rec.json
+      const state = signingState(session)
+      if (state === 'CANCELLED') { const e = new Error('Povezava za podpis je bila preklicana.'); e.status = 410; throw e }
+      if (state === 'EXPIRED') { const e = new Error('Povezava za podpis je potekla.'); e.status = 410; throw e }
+      if (state === 'COMPLETED') { const e = new Error('Podpisovanje tega dokumenta je že zaključeno.'); e.status = 409; throw e }
+      if (!session.roles.includes(role)) { const e = new Error('To podpisno polje ni vključeno v povezavo.'); e.status = 403; throw e }
+
+      const docRec = await s.getRecord('docs', session.docId)
+      if (!docRec || docRec.deleted) { const e = new Error('Dokument ne obstaja.'); e.status = 404; throw e }
+      const doc = docRec.json
+      if (doc.status !== 'ZAKLJUCEN') { const e = new Error('Dokument ni več na voljo za podpis.'); e.status = 409; throw e }
+      const already = (doc.signatures || []).find((x) => x.role === role)
+      if (already) {
+        if ((session.signedRoles || []).includes(role)) return { session, already: true, signature: already }
+        const e = new Error('To polje je medtem že podpisano.'); e.status = 409; throw e
+      }
+
+      const signedAt = nowIso()
+      const sig = {
+        role, signerName: String(signerName).trim(), type: 'DIGITALNO', dataUrl,
+        signedAt, capturedBy: `QR povezava · ${session.createdBy}`,
+      }
+      const signatures = [...(doc.signatures || []), sig]
+      const updatedDoc = {
+        ...doc, signatures,
+        ...(role === 'PREJEL' ? { prejelStatus: 'DIGITALNO' } : {}),
+        updatedAt: signedAt, updatedBy: `${sig.signerName} (QR)`, syncStatus: 'SINHRONIZIRANO',
+      }
+      await s.putRecord('docs', doc.id, updatedDoc, signedAt)
+
+      session.signedRoles = [...new Set([...(session.signedRoles || []), role])]
+      if (session.roles.every((r) => session.signedRoles.includes(r))) session.completedAt = signedAt
+      await s.putRecord('signing_sessions', session.id, session, signedAt)
+      await s.addAudit({
+        id: uuid(), at: signedAt, user: `${sig.signerName} (QR)`, role: session.createdByRole,
+        action: 'Podpis preko QR povezave', entity: 'BlagajniskiDokument', entityId: doc.id,
+        details: `${SIGN_ROLE_LABELS[role] || role} · povezavo ustvaril ${session.createdBy}`,
+      })
+      return { session, already: false, signature: sig }
+    })
+    const status = signingState(result.session)
+    res.json({ ok: true, status: status === 'COMPLETED' ? 'COMPLETED' : 'ACTIVE', signedRoles: result.session.signedRoles || [], signature: result.signature })
+  } catch (e) {
+    if (e?.status) return res.status(e.status).json({ error: e.message })
+    console.error('[qr-signature]', e)
+    res.status(500).json({ error: 'Podpisa ni bilo mogoče shraniti.' })
+  }
+})
+
 // ---------------- zaključek meseca (atomarno, strežniška resnica) ----------------
 const txAt = (d) => `${d.transactionDate || '0000-00-00'}T${d.transactionTime || '00:00'}`
 const sortChrono = (a, b) => txAt(a).localeCompare(txAt(b)) || (a.createdAt || '').localeCompare(b.createdAt || '') || a.id.localeCompare(b.id)
@@ -269,9 +449,9 @@ app.post('/api/close-month', auth, async (req, res) => {
         err.problems = problems
         throw err
       }
-      const closes = (await s.listTable('closes')).filter((c) => c.scopeKey === scope && c.year === year)
-      const lastBp = closes.reduce((m, c) => Math.max(m, c.bpEnd || 0), 0)
-      const lastBi = closes.reduce((m, c) => Math.max(m, c.biEnd || 0), 0)
+      // Mesečno številčenje: BP in BI se vsak mesec začneta pri 1.
+      const lastBp = 0
+      const lastBi = 0
       const bp = allDocs.filter((d) => d.type === 'BP').sort(sortChrono)
       const bi = allDocs.filter((d) => d.type === 'BI').sort(sortChrono)
       const at = nowIso()

@@ -128,19 +128,12 @@ export function SettingsView() {
               <option value="COMPANY">Skupno za celotno podjetje</option>
             </select>
           </Field>
-          <Field label="Prikaz številke" hint="Motor številčenja ni odvisen od prikaza — spremembo lahko naredite kadarkoli.">
-            <select
-              className={inputCls}
-              value={settings.numberFormat}
-              onChange={async (e) => { await app.saveSettings({ numberFormat: e.target.value as any }); await app.audit('Sprememba formata številk', 'Nastavitve', 'main', e.target.value) }}
-            >
-              <option value="SLASH">BP 10/2026</option>
-              <option value="DASH">BP-2026-0010</option>
-            </select>
+          <Field label="Format številke" hint="Format je vezan na mesečno zaporedje in je enoten za BP in BI.">
+            <div className={`${inputCls} bg-slate-50 text-slate-700 font-mono`}>BP-2026-09-0001 / BI-2026-09-0001</div>
           </Field>
         </div>
         <div className="mt-3 text-[12px] text-slate-500">
-          BP in BI imata ločeni zaporedji · zaporedja se ponastavijo vsako koledarsko leto · števec se začne pri 0, prvi dokument dobi številko 1 · številke se dodelijo šele ob akciji »Zaključi mesec«, kronološko po času transakcije.
+          BP in BI imata ločeni zaporedji · zaporedji se ponastavita na začetku vsakega meseca · prvi dokument v mesecu dobi številko 0001 · uradna oblika je BP/BI-YYYY-MM-0000 · številke se dodelijo šele ob akciji »Zaključi mesec«, kronološko po času transakcije.
         </div>
       </section>
 

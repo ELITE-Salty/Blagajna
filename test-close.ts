@@ -33,7 +33,7 @@ async function main() {
       mk('b', 'BP', '2026-08-15', '16:00', '2026-08-27T09:00:00Z', 80),
       mk('c', 'BI', '2026-08-04', '06:30', '2026-08-04T07:00:00Z', 300),
     ])
-    // že zaključen julij za nadaljevanje zaporedja
+    // že zaključen julij — avgust mora kljub temu začeti znova pri 1
     await db.closes.put({
       id: 'gb|2026-07', scopeKey: 'gb', deskId: 'gb', year: 2026, month: 7, monthKey: '2026-07',
       bpStart: 1, bpEnd: 3, biStart: 1, biEnd: 2, docCount: 5, closedBy: 'T', closedAt: '2026-07-31T15:00:00Z',

@@ -11,6 +11,8 @@ services:
       - ADMIN_NAME=${ADMIN_NAME:-Admin}
       # Neobvezno — če ni nastavljeno, se skrivnost ustvari samodejno v data/jwt-secret.
       - JWT_SECRET=${JWT_SECRET:-}
+      # Javni osnovni URL za 30-minutne QR povezave za podpisovanje (npr. https://blagajna.example.si).
+      - PUBLIC_BASE_URL=${PUBLIC_BASE_URL:-}
       # Neobvezno: zunanja baza PostgreSQL (v drugem CT/VM). Brez te vrstice se uporabi SQLite v ./data.
       - DATABASE_URL=${DATABASE_URL:-}
     volumes:

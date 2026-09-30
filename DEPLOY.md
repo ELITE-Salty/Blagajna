@@ -68,7 +68,8 @@ blagajna.blu-logistics.si {
 }
 ```
 
-4. `docker compose up -d` — čez minuto deluje `https://blagajna.blu-logistics.si` z veljavnim certifikatom.
+4. V `.env` dodajte tudi `PUBLIC_BASE_URL=https://blagajna.blu-logistics.si`. Ta naslov se uporabi za začasne QR povezave za podpisovanje in mora biti dosegljiv s Samsung tablice.
+5. `docker compose up -d` — aplikacija deluje na `https://blagajna.blu-logistics.si` z veljavnim certifikatom.
 
 > Če aplikacijo uporabljate **samo v pisarniškem omrežju (LAN)**, lahko HTTPS izpustite,
 > a se zavedajte, da so gesla takrat vidna v lokalnem omrežju.
@@ -179,6 +180,14 @@ sicer se ob izgubi uporabniki zgolj znova prijavijo.)
 5. **Nastavitve → Uporabniki**: dodajte računovodjo in finance (vsak svoje geslo).
 6. **Zaposleni**: vnesite voznike (datum rojstva, št. dovoljenja, datum zaposlitve — za potrdila).
 7. Začnite z vnosom dokumentov. Vse se sinhronizira samodejno; značka v glavi pokaže stanje.
+
+## Podpisovanje prek QR kode
+
+Za zaključen in oštevilčen BP/BI je v dokumentu na voljo **QR podpis**. Uporabnik izbere eno ali več podpisnih vlog, aplikacija pa ustvari naključno povezavo z veljavnostjo 30 minut. Povezava je vezana samo na izbrani dokument in izbrana podpisna polja. Ko so vsi izbrani podpisi oddani, se javna povezava takoj zaklene; uporabnik jo lahko pred tem tudi ročno prekliče.
+
+Na tablici se prikaže dejanski obrazec BP/BI. Izbrana podpisna mesta so označena in jih je mogoče tapniti; podpisna ploščica podpira prst, miško in pisalo/S Pen. Priponke se na javno podpisno stran ne pošiljajo — prikazana so samo njihova imena na obrazcu.
+
+Če je aplikacija za reverse proxyjem ali jo na računalniku odpirate prek drugega notranjega naslova, nastavite `PUBLIC_BASE_URL`, da QR vedno vsebuje naslov, ki ga tablica lahko doseže.
 
 ## Varnostne kopije
 
