@@ -106,7 +106,7 @@ export function PaperDoc({ doc, settings, desk, embedded = false, copyLabel, sig
           <div className="space-y-2 mt-1">
             {[0, 1, 2].map((i) => (
               <div key={i} className="border-b border-dotted border-current min-h-[16px] px-1 font-mono text-[10px]">
-                {i === 0 ? doc.purpose : i === 1 && doc.notes ? `Opomba: ${doc.notes}` : ''}
+                {i === 0 ? doc.purpose : ''}
               </div>
             ))}
           </div>
@@ -165,19 +165,6 @@ export function PaperDoc({ doc, settings, desk, embedded = false, copyLabel, sig
   )
 }
 
-
-function PaperDocPair({ doc, settings, desk }: { doc: CashDocument; settings: Settings; desk?: CashDesk }) {
-  const personCopy = doc.type === 'BP' ? 'Izvod za vplačnika' : 'Izvod za prejemnika'
-  return (
-    <div className="paper relative bg-white">
-      <PaperDoc doc={doc} settings={settings} desk={desk} embedded copyLabel="Izvod za blagajno" />
-      <div className="my-3 border-t border-dashed border-slate-400 relative">
-        <span className="absolute -top-2.5 left-2 bg-white px-1 text-[9px] text-slate-400">✂</span>
-      </div>
-      <PaperDoc doc={doc} settings={settings} desk={desk} embedded copyLabel={personCopy} />
-    </div>
-  )
-}
 
 // ---------------------------------------------------------------- Potrdilo o dejavnostih (AETR)
 export function PaperPotrdilo({ p, settings }: { p: Potrdilo; settings: Settings }) {
@@ -379,11 +366,11 @@ export function PrintOverlay({ job, settings, onClose }: { job: PrintJob; settin
           <Btn onClick={onClose}>Zapri</Btn>
         </div>
       </div>
-      <div className="mx-auto max-w-4xl py-6 px-2 space-y-6 print:p-0 print:m-0 print:max-w-none print:space-y-0">
+      <div className={cx('mx-auto py-6 px-2 space-y-6 print:p-0 print:m-0 print:max-w-none print:space-y-0', job.docs?.length ? 'max-w-[1120px]' : 'max-w-4xl')}>
         <div className="text-center text-[11px] text-slate-300 print:hidden">
           Predogled tiskanja — obrazec je oblikovan po vzoru obstoječih papirnih obrazcev. Če se tiskalno okno ne odpre, uporabite nameščeno/izvoženo različico aplikacije.
         </div>
-        {job.docs?.map(({ doc, desk }) => <PaperDocPair key={doc.id} doc={doc} settings={settings} desk={desk} />)}
+        {job.docs?.map(({ doc, desk }) => <div className="paper-receipt" key={doc.id}><PaperDoc doc={doc} settings={settings} desk={desk} /></div>)}
         {job.potrdila?.map((p) => <PaperPotrdilo key={p.id} p={p} settings={settings} />)}
         {job.knjiga && <PaperKnjiga k={job.knjiga} settings={settings} />}
       </div>

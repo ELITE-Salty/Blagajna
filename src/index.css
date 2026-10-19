@@ -27,10 +27,20 @@ input[type='number']::-webkit-inner-spin-button {
 .paper-a4 {
   min-height: 255mm;
 }
+/* BP/BI documents have their own landscape sheet, without changing the
+   orientation of certificates or the cash book. */
+.paper-receipt .paper {
+  width: 277mm;
+  min-height: 180mm;
+}
 
 @media print {
   @page {
     size: A4 portrait;
+    margin: 8mm;
+  }
+  @page blagajniski-dokument {
+    size: A4 landscape;
     margin: 8mm;
   }
   html,
@@ -49,6 +59,19 @@ input[type='number']::-webkit-inner-spin-button {
     break-after: page;
     page-break-after: always;
   }
+  .paper-receipt {
+    page: blagajniski-dokument;
+    min-height: 0;
+    break-after: page;
+    page-break-after: always;
+  }
+  .paper-receipt .paper {
+    width: 100% !important;
+    min-height: 0;
+    break-after: auto;
+    page-break-after: auto;
+  }
+  .paper-receipt:last-child,
   .paper:last-child {
     break-after: auto;
     page-break-after: auto;

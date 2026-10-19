@@ -1,0 +1,12 @@
+IMPORTANT / POMEMBNO
+
+Code changes are in src/. Existing dist/ files are from the supplied original ZIP.
+Before using the modified UI, regenerate dist/ from the updated sources:
+
+  npm ci
+  npm run build
+
+Alternatively rebuild your Docker image from this project (Dockerfile already
+runs these commands). You do NOT need a database migration.
+
+See CHANGES-2026-10-19-PRINT-ACCOUNTING.md and CHANGES-2026-10-19-LANDSCAPE.md.

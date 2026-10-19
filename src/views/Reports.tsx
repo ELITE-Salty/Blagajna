@@ -9,6 +9,7 @@ import { locationIdsForView } from '../lib/desks'
 import { Btn, Chip, Warn, inputCls } from '../components/ui'
 import type { KnjigaJob, PrintJob } from '../print'
 import { buildXlsx, buildZip, downloadXlsx, excelDateSerial, XLSX_STYLE, type XlsxCell, type XlsxWorkbook } from '../lib/xlsx'
+import { receiptToPdf } from '../lib/receiptPdf'
 
 function csvCell(value: unknown): string {
   const s = String(value ?? '')
@@ -259,7 +260,7 @@ export function ReportsView({
       return
     }
 
-    const header = ['Številka', 'Datum', 'Čas', 'Tip', 'Blagajna', 'Zaposleni', 'Za (namen)', 'Konto', 'Prejemek (EUR)', 'Izdatek (EUR)', 'Status', 'Opombe', 'Št. prilog', 'Datoteke prilog']
+    const header = ['Številka', 'Datum', 'Čas', 'Tip', 'Blagajna', 'Zaposleni', 'Za (namen)', 'Konto', 'Prejemek (EUR)', 'Izdatek (EUR)', 'Št. prilog', 'Datoteke prilog']
     const rowsXlsx: XlsxCell[][] = [
       [{ value: 'Paket za računovodstvo', style: XLSX_STYLE.TITLE }],
       [{ value: `Obdobje: ${fmtDate(from)} – ${fmtDate(to)} · samo uradno oštevilčeni dokumenti`, style: XLSX_STYLE.SUBTITLE }],
@@ -269,9 +270,10 @@ export function ReportsView({
 
     const zipFiles: Array<{ name: string; data: Uint8Array }> = []
     const manifestLines = [[
-      'Številka', 'Datum', 'Tip', 'Blagajna', 'Zaposleni', 'Znesek (EUR)', 'Status', 'Pot priloge',
+      'Številka', 'Datum', 'Tip', 'Blagajna', 'Zaposleni', 'Znesek (EUR)', 'Pot priloge',
     ].join(';')]
     let attachmentCount = 0
+    let printCount = 0
 
     for (let i = 0; i < numberedRows.length; i++) {
       const d = numberedRows[i]
@@ -281,11 +283,22 @@ export function ReportsView({
       const dateStyle = alt ? XLSX_STYLE.DATE_ALT : XLSX_STYLE.DATE
       const inStyle = alt ? XLSX_STYLE.MONEY_IN_ALT : XLSX_STYLE.MONEY_IN
       const outStyle = alt ? XLSX_STYLE.MONEY_OUT_ALT : XLSX_STYLE.MONEY_OUT
-      const statusText = d.status === 'STORNIRAN' ? 'STORNIRANO' : 'zaključen'
-      const statusStyle = d.status === 'STORNIRAN' ? XLSX_STYLE.STATUS_VOID : XLSX_STYLE.STATUS_CLOSED
       const paths: string[] = []
       const deskCode = deskOf(d.deskId)?.code ?? d.deskId
       const attachmentFolder = `${safeFileName(number)}__${safeFileName(deskCode)}`
+
+      // V vsaki mapi je EN A4 PDF v ležeči postavitvi istega BP/BI kot pri gumbu »Natisni«.
+      // Dodamo ga tudi v manifest in stolpec s potmi prilog.
+      const printPath = `priloge/${attachmentFolder}/${safeFileName(number)}-PRINT.pdf`
+      try {
+        zipFiles.push({ name: printPath, data: await receiptToPdf(d, settings, deskOf(d.deskId)) })
+      } catch (error) {
+        alert(`PDF za dokument ${number} ni bilo mogoče ustvariti. Izvoz je prekinjen.\n${String(error)}`)
+        return
+      }
+      paths.push(printPath)
+      attachmentCount++
+      printCount++
 
       for (let j = 0; j < (d.attachments ?? []).length; j++) {
         const att = d.attachments[j]
@@ -299,6 +312,7 @@ export function ReportsView({
           const errorPath = `priloge/${attachmentFolder}/${String(j + 1).padStart(2, '0')}-NAPAKA.txt`
           zipFiles.push({ name: errorPath, data: utf8.encode(`Priloge »${att.name}« ni bilo mogoče pretvoriti za izvoz.`) })
           paths.push(errorPath)
+          attachmentCount++
         }
       }
 
@@ -313,19 +327,16 @@ export function ReportsView({
         { value: (d.rows ?? []).map((r) => r.konto).filter(Boolean).join(', '), style: base },
         { value: d.type === 'BP' ? (d.amount ?? 0) : null, style: inStyle },
         { value: d.type === 'BI' ? (d.amount ?? 0) : null, style: outStyle },
-        { value: statusText, style: statusStyle },
-        { value: d.notes || '', style: base },
-        { value: d.attachments?.length ?? 0, style: base },
+        { value: paths.length, style: base },
         { value: paths.join(' | '), style: base },
       ])
 
       const baseManifest = [
         csvCell(number), csvCell(fmtDate(d.transactionDate)), csvCell(d.type),
         csvCell(deskOf(d.deskId)?.name ?? d.deskId), csvCell(d.employeeName || ''),
-        csvCell(fmtNum(d.amount ?? 0)), csvCell(statusText),
+        csvCell(fmtNum(d.amount ?? 0)),
       ]
-      if (paths.length === 0) manifestLines.push([...baseManifest, ''].join(';'))
-      else for (const path of paths) manifestLines.push([...baseManifest, csvCell(path)].join(';'))
+      for (const path of paths) manifestLines.push([...baseManifest, csvCell(path)].join(';'))
     }
 
     const accountingBook: XlsxWorkbook = {
@@ -335,9 +346,9 @@ export function ReportsView({
       company: settings.company.name,
       sheets: [{
         name: 'Dokumenti', rows: rowsXlsx,
-        widths: [21, 13, 9, 8, 22, 24, 34, 18, 18, 18, 15, 30, 11, 48],
-        merges: ['A1:N1', 'A2:N2'], freezeRows: 4,
-        autoFilter: `A4:N${rowsXlsx.length}`, showGridLines: false, landscape: true,
+        widths: [21, 13, 9, 8, 22, 24, 34, 18, 18, 18, 11, 48],
+        merges: ['A1:L1', 'A2:L2'], freezeRows: 4,
+        autoFilter: `A4:L${rowsXlsx.length}`, showGridLines: false, landscape: true,
         rowHeights: { 1: 28, 4: 30 },
       }],
     }
@@ -347,8 +358,8 @@ export function ReportsView({
       { name: 'manifest-prilog.csv', data: utf8.encode('\uFEFF' + manifestLines.join('\r\n')) },
       { name: 'PREBERI-ME.txt', data: utf8.encode(
         `Paket za računovodstvo\r\nObdobje: ${fmtDate(from)} – ${fmtDate(to)}\r\n` +
-        `Dokumenti: ${numberedRows.length}\r\nPriloge: ${attachmentCount}\r\n\r\n` +
-        `Excel vsebuje uradne številke dokumentov. Mapa »priloge« je organizirana po uradni številki in šifri blagajne (da se datoteke ne prepišejo pri številčenju po blagajnah). ` +
+        `Dokumenti: ${numberedRows.length}\r\nPDF izpisi BP/BI (po en A4 ležeče na dokument): ${printCount}\r\nVse priloge skupaj: ${attachmentCount}\r\n\r\n` +
+        `Excel vsebuje uradne številke dokumentov brez stolpcev Status in Opombe. Mapa »priloge« za vsak dokument vključuje enostranski izpis v PDF ter originalne skenirane priloge. Mape so organizirane po uradni številki in šifri blagajne. ` +
         `Datoteka manifest-prilog.csv povezuje vsak dokument s potjo do njegove priloge.\r\n`,
       ) },
     )
@@ -451,7 +462,7 @@ export function ReportsView({
         <h1 className="text-lg font-semibold text-slate-800">Poročila in izvoz</h1>
         <div className="flex-1" />
         <Btn onClick={exportExcel} title="Pravi Excel .xlsx z oblikovanjem, filtri in povzetkom">⬇️ Izvozi Excel (.xlsx){sel.size > 0 ? ` — izbrane (${sel.size})` : ''}</Btn>
-        <Btn kind="primary" onClick={exportAccountingPackage} title="ZIP za računovodstvo: uradno oštevilčeni dokumenti + Excel + skenirane priloge">📦 Paket za računovodstvo (.zip)</Btn>
+        <Btn kind="primary" onClick={exportAccountingPackage} title="ZIP za računovodstvo: Excel + enostranski izpisi BP/BI (PDF) + skenirane priloge">📦 Paket za računovodstvo (.zip)</Btn>
         <Btn onClick={exportTransfersCsv} disabled={transferRows.length === 0} title="Izvozi interne prenose za izbrano obdobje in blagajno v CSV">⬇️ Prenosi CSV ({transferRows.length})</Btn>
         <Btn onClick={printSelected} disabled={sel.size === 0} title="Natisne izbrane dokumente kot obrazce BP/BI">🖨️ Natisni izbrane ({sel.size})</Btn>
         <Btn kind="primary" onClick={printKnjiga} disabled={!deskId || !!selectedDesk?.isGroup} title={selectedDesk?.isGroup ? 'Za klasično blagajniško knjigo izberite eno interno lokacijo.' : deskId ? 'Klasična blagajniška knjiga s tekočim saldom' : 'Izberite eno blagajno'}>📒 Blagajniška knjiga</Btn>
