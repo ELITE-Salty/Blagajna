@@ -172,10 +172,10 @@ export async function receiptToPdf(doc: CashDocument, settings: Settings, desk?:
     ctx.save(); ctx.translate(W / 2, H / 2); ctx.rotate(-Math.PI / 10)
     ctx.globalAlpha = .20; text('OSNUTEK - BREZ URADNE ŠTEVILKE', 0, 0, 28, muted, true, 'center'); ctx.restore()
   }
-  line(left, 550, right, 550, '#cbd5e1')
+  {/*line(left, 550, right, 550, '#cbd5e1')
   text(`${settings.company.name} - interna blagajniška dokumentacija`, left, 567, 8, muted)
   text(`Obr. ${doc.type} · Blagajna Blu`, right, 567, 8, muted, false, 'right')
-
+  */}
   const blob = await new Promise<Blob>((resolve, reject) => canvas.toBlob((b) => b ? resolve(b) : reject(new Error('Izris PDF ni uspel.')), 'image/jpeg', 0.94))
   return jpegToA4Pdf(new Uint8Array(await blob.arrayBuffer()), canvas.width, canvas.height, 'landscape')
 }

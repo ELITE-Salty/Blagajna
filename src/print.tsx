@@ -157,10 +157,10 @@ export function PaperDoc({ doc, settings, desk, embedded = false, copyLabel, sig
           STORNIRANO {doc.cancelledAt ? fmtDateTime(doc.cancelledAt).split(' ')[0] : ''} — {doc.cancelReason}
         </div>
       )}
-      <div className="mt-2 flex justify-between text-[7px] opacity-60">
+      {/*<div className="mt-2 flex justify-between text-[7px] opacity-60">
         <span>{settings.company.name} — interna blagajniška dokumentacija</span>
         <span>Obr. {isBP ? 'BP' : 'BI'} · Blagajna Blu</span>
-      </div>
+      </div>*/}
     </div>
   )
 }
