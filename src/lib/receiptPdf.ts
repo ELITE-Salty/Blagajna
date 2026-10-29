@@ -161,7 +161,7 @@ export async function receiptToPdf(doc: CashDocument, settings: Settings, desk?:
         ctx.drawImage(img, x + (sigWidth - imageW) / 2, signatureTop + 40 - imageH, imageW, imageH)
       } catch { text('Podpis ni na voljo', x + 8, signatureTop + 30, 8, muted) }
     }
-    if (sig) text(`${sig.signerName} · ${fmtDateTime(sig.signedAt).split(' ')[0]}`, x + 5, signatureTop + 72, 8, muted)
+    if (sig) text(sig.signerName, x + 5, signatureTop + 72, 8, muted)
   }
 
   if (doc.status === 'STORNIRAN') {

@@ -24,7 +24,7 @@ function SigBox({ label, sig, accent, signable = false, onSign }: { label: strin
       <div className="h-9 flex items-center justify-center overflow-hidden">
         {sig?.dataUrl ? <img src={sig.dataUrl} alt="" className="max-h-9" /> : signable ? <span className="text-[7px] font-semibold leading-tight text-center px-1">Tapnite za podpis</span> : null}
       </div>
-      {sig && <div className="text-[7px] font-mono text-center truncate">{sig.signerName} · {fmtDateTime(sig.signedAt).split(' ')[0]}</div>}
+      {sig && <div className="text-[7px] font-mono text-center truncate">{sig.signerName}</div>}
     </>
   )
   const cls = cx('flex-1 border-t px-1 pt-0.5 min-w-0', accent ? 'border-t-2 border-current' : 'border-current', signable && 'rounded-b bg-yellow-50 ring-2 ring-yellow-300 ring-offset-1')

@@ -3,7 +3,7 @@ import { useLiveQuery } from 'dexie-react-hooks'
 import { useApp, useSyncState } from '../state'
 import { EmployeeEdit } from './Employees'
 import type { CashDesk, CashDocument, CashTransfer, DocType } from '../types'
-import { PREJEL_LABELS } from '../types'
+import { PREJEL_LABELS, SIGNATURE_ROLES_BI, SIGNATURE_ROLES_BP } from '../types'
 import { cx, docNo, fmtDate, fmtDateTime, fmtEur, monthLabel, nDokumentovIma, nowIso, nowTime, parseAmount, todayIso, currentMonthKey, uuid } from '../lib/util'
 import { closeIdFor, docProblems } from '../lib/numbering'
 import { availableInDesk, balanceInfo, checkBiCover } from '../lib/balance'
@@ -27,6 +27,63 @@ function surnameFirst(name = '') {
 function surnameSort(a: { displayName?: string }, b: { displayName?: string }) {
   return surnameFirst(a.displayName).localeCompare(surnameFirst(b.displayName), 'sl', { sensitivity: 'base' })
 }
+
+// Only two recorded signatures are needed for the dashboard to consider a BP/BI
+// signed. Count distinct signing roles, including a manually confirmed BI
+// 'Prejel'; printing for a future signature does not count.
+const REQUIRED_SIGNATURES = 2
+function signingProgress(doc: CashDocument) {
+  const roles = doc.type === 'BP' ? SIGNATURE_ROLES_BP : SIGNATURE_ROLES_BI
+  const signed = roles.filter((role) =>
+    doc.signatures?.some((sig) => sig.role === role) ||
+    (doc.type === 'BI' && role === 'PREJEL' && (doc.prejelStatus === 'ROCNO' || doc.prejelStatus === 'DIGITALNO')),
+  ).length
+  return { signed, complete: signed >= REQUIRED_SIGNATURES }
+}
+
+type TableFilters = {
+  number: string
+  dateFrom: string
+  dateTo: string
+  timeFrom: string
+  timeTo: string
+  type: '' | DocType
+  deskId: string
+  employeeId: string
+  purpose: string
+  incomingMin: string
+  incomingMax: string
+  outgoingMin: string
+  outgoingMax: string
+  status: '' | 'ODPRT' | 'ZAKLJUCEN' | 'STORNIRAN' | 'LOKALNO'
+  signing: '' | 'MISSING' | 'NONE' | 'PARTIAL' | 'COMPLETE'
+}
+type SortColumn = 'number' | 'date' | 'time' | 'type' | 'desk' | 'employee' | 'purpose' | 'incoming' | 'outgoing' | 'status' | 'signing'
+type SortDirection = 'asc' | 'desc'
+const EMPTY_TABLE_FILTERS: TableFilters = {
+  number: '', dateFrom: '', dateTo: '', timeFrom: '', timeTo: '', type: '',
+  deskId: '', employeeId: '', purpose: '', incomingMin: '', incomingMax: '',
+  outgoingMin: '', outgoingMax: '', status: '', signing: '',
+}
+
+// Filters are optional: the table starts uncluttered, and users pick only the
+// controls they want. Removing a control also clears its value.
+type OptionalFilter = 'date' | 'type' | 'signing' | 'status' | 'employee' | 'desk' | 'number' | 'purpose' | 'incoming' | 'outgoing' | 'time'
+const FILTER_CHOICES: { id: OptionalFilter; label: string }[] = [
+  { id: 'date', label: 'Datum' }, { id: 'type', label: 'Tip (BP / BI)' },
+  { id: 'signing', label: 'Podpisi' }, { id: 'status', label: 'Stanje' },
+  { id: 'employee', label: 'Zaposleni' }, { id: 'desk', label: 'Blagajna' },
+  { id: 'number', label: 'Številka' }, { id: 'purpose', label: 'Namen' },
+  { id: 'incoming', label: 'Prejemek (€)' }, { id: 'outgoing', label: 'Izdatek (€)' },
+  { id: 'time', label: 'Čas' },
+]
+const FILTER_FIELDS: Record<OptionalFilter, (keyof TableFilters)[]> = {
+  date: ['dateFrom', 'dateTo'], type: ['type'], signing: ['signing'], status: ['status'],
+  employee: ['employeeId'], desk: ['deskId'], number: ['number'], purpose: ['purpose'],
+  incoming: ['incomingMin', 'incomingMax'], outgoing: ['outgoingMin', 'outgoingMax'],
+  time: ['timeFrom', 'timeTo'],
+}
+const VISIBLE_FILTERS_KEY = 'blagajna-workspace-visible-filters-v1'
 
 type AttachmentPreview = {
   name: string
@@ -59,9 +116,49 @@ export function MonthWorkspace({
   const app = useApp()
   const { db, settings, role } = app
   const [month, setMonth] = useState(currentMonthKey())
-  const [fltType, setFltType] = useState<'' | DocType>('')
-  const [fltEmp, setFltEmp] = useState('')
+  const [filters, setFilters] = useState<TableFilters>({ ...EMPTY_TABLE_FILTERS })
+  const [selectedFilters, setSelectedFilters] = useState<OptionalFilter[]>(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(VISIBLE_FILTERS_KEY) ?? '[]')
+      if (Array.isArray(saved)) return FILTER_CHOICES.map((choice) => choice.id).filter((id) => saved.includes(id))
+    } catch { /* storage can be unavailable or malformed */ }
+    return []
+  })
+  const [showFilterPicker, setShowFilterPicker] = useState(false)
+  const [sortColumn, setSortColumn] = useState<SortColumn>('date')
+  const [sortDirection, setSortDirection] = useState<SortDirection>('desc')
   const [search, setSearch] = useState('')
+  const setFilter = <K extends keyof TableFilters>(key: K, value: TableFilters[K]) => {
+    setFilters((previous) => ({ ...previous, [key]: value }))
+  }
+  const removeFilter = (option: OptionalFilter) => {
+    setSelectedFilters((previous) => previous.filter((item) => item !== option))
+    setFilters((previous) => {
+      const next = { ...previous }
+      for (const field of FILTER_FIELDS[option]) next[field] = ''
+      return next
+    })
+  }
+  const toggleFilter = (option: OptionalFilter) => {
+    if (selectedFilters.includes(option)) removeFilter(option)
+    else setSelectedFilters((previous) => [...previous, option])
+  }
+  const toggleSort = (column: SortColumn) => {
+    if (column === sortColumn) setSortDirection((direction) => direction === 'asc' ? 'desc' : 'asc')
+    else { setSortColumn(column); setSortDirection(column === 'date' || column === 'time' ? 'desc' : 'asc') }
+  }
+  const resetTable = () => {
+    setFilters({ ...EMPTY_TABLE_FILTERS })
+    setSelectedFilters([])
+    setShowFilterPicker(false)
+    setSearch('')
+    setSortColumn('date')
+    setSortDirection('desc')
+  }
+  useEffect(() => {
+    try { localStorage.setItem(VISIBLE_FILTERS_KEY, JSON.stringify(selectedFilters)) }
+    catch { /* storage can be unavailable */ }
+  }, [selectedFilters])
   const [wizard, setWizard] = useState<null | 'preview' | 'close'>(null)
   const [showManifest, setShowManifest] = useState(false)
   const [newEmpForDoc, setNewEmpForDoc] = useState<string | null>(null)
@@ -131,28 +228,76 @@ export function MonthWorkspace({
   const docIsClosed = (d: CashDocument) => monthCloses.some((c) => c.id === closeIdFor(settings, d.deskId, month))
 
   const docs = useMemo(() => {
+    const deskNames = new Map(desks.map((desk) => [desk.id, desk.name]))
+    const minIn = parseAmount(filters.incomingMin)
+    const maxIn = parseAmount(filters.incomingMax)
+    const minOut = parseAmount(filters.outgoingMin)
+    const maxOut = parseAmount(filters.outgoingMax)
+    const normalized = (text: string) => text.toLocaleLowerCase('sl').trim()
+    const q = normalized(search)
+
     return docsAll
       .filter((d) => viewLocationSet.has(d.deskId))
-      .filter((d) => !fltType || d.type === fltType)
-      .filter((d) => !fltEmp || d.employeeId === fltEmp)
+      .filter((d) => !filters.type || d.type === filters.type)
+      .filter((d) => !filters.deskId || d.deskId === filters.deskId)
+      .filter((d) => !filters.employeeId || d.employeeId === filters.employeeId)
+      .filter((d) => !filters.number || normalized(d.officialNumber == null ? 'osnutek' : docNo(d.type, d.officialNumber, d.seqYear, settings.numberFormat, d.monthKey)).includes(normalized(filters.number)))
+      .filter((d) => (!filters.dateFrom || d.transactionDate >= filters.dateFrom) && (!filters.dateTo || d.transactionDate <= filters.dateTo))
+      .filter((d) => (!filters.timeFrom || d.transactionTime >= filters.timeFrom) && (!filters.timeTo || d.transactionTime <= filters.timeTo))
+      .filter((d) => !filters.purpose || normalized(d.purpose).includes(normalized(filters.purpose)))
       .filter((d) => {
-        if (!search.trim()) return true
-        const q = search.toLowerCase()
-        return (
-          d.employeeName.toLowerCase().includes(q) ||
-          d.purpose.toLowerCase().includes(q) ||
-          String(d.amount ?? '').includes(q.replace(',', '.')) ||
-          (d.officialNumber != null && String(d.officialNumber).includes(q))
-        )
+        if (minIn == null && maxIn == null) return true
+        return d.type === 'BP' && d.amount != null && (minIn == null || d.amount >= minIn) && (maxIn == null || d.amount <= maxIn)
       })
+      .filter((d) => {
+        if (minOut == null && maxOut == null) return true
+        return d.type === 'BI' && d.amount != null && (minOut == null || d.amount >= minOut) && (maxOut == null || d.amount <= maxOut)
+      })
+      .filter((d) => !filters.status || (filters.status === 'LOKALNO' ? d.syncStatus === 'LOKALNO' : d.status === filters.status))
+      .filter((d) => {
+        if (!filters.signing) return true
+        // Cancelled documents must not appear in a list of pending signatures.
+        if (d.status === 'STORNIRAN') return false
+        const progress = signingProgress(d)
+        if (filters.signing === 'MISSING') return !progress.complete
+        if (filters.signing === 'NONE') return progress.signed === 0
+        if (filters.signing === 'PARTIAL') return progress.signed > 0 && !progress.complete
+        return progress.complete
+      })
+      .filter((d) => !q || (
+        normalized(d.employeeName).includes(q) ||
+        normalized(d.purpose).includes(q) ||
+        String(d.amount ?? '').includes(q.replace(',', '.')) ||
+        (d.officialNumber != null && String(d.officialNumber).includes(q))
+      ))
       .sort((a, b) => {
-        const dateTime = `${b.transactionDate}T${b.transactionTime}`.localeCompare(`${a.transactionDate}T${a.transactionTime}`)
-        return dateTime || b.createdAt.localeCompare(a.createdAt)
+        const value = (d: CashDocument): string | number => {
+          switch (sortColumn) {
+            case 'number': return d.officialNumber ?? -1
+            case 'date': return `${d.transactionDate}T${d.transactionTime}`
+            case 'time': return d.transactionTime
+            case 'type': return d.type
+            case 'desk': return deskNames.get(d.deskId) ?? d.deskId
+            case 'employee': return surnameFirst(d.employeeName)
+            case 'purpose': return d.purpose
+            case 'incoming': return d.type === 'BP' ? d.amount ?? -1 : -1
+            case 'outgoing': return d.type === 'BI' ? d.amount ?? -1 : -1
+            case 'status': return d.status
+            case 'signing': return signingProgress(d).signed
+          }
+        }
+        const left = value(a)
+        const right = value(b)
+        const compared = typeof left === 'number' && typeof right === 'number'
+          ? left - right
+          : String(left).localeCompare(String(right), 'sl', { numeric: true, sensitivity: 'base' })
+        return (sortDirection === 'asc' ? compared : -compared) || b.createdAt.localeCompare(a.createdAt)
       })
-  }, [docsAll, viewDeskId, desks, fltType, fltEmp, search])
+  }, [docsAll, viewDeskId, desks, filters, search, sortColumn, sortDirection, settings.numberFormat])
 
   const deskDocs = useMemo(() => docsAll.filter((d) => viewLocationSet.has(d.deskId)), [docsAll, viewDeskId, desks])
   const incomplete = deskDocs.filter((d) => d.status === 'ODPRT' && !docIsClosed(d) && docProblems(d, settings.requirePurpose).length > 0)
+  const unsignedCount = deskDocs.filter((d) => d.status !== 'STORNIRAN' && !signingProgress(d).complete).length
   const unsyncedHere = deskDocs.filter((d) => d.syncStatus === 'LOKALNO').length + transfers.filter((t) => t.syncStatus === 'LOKALNO').length
 
   // Stanje blagajne: for All desks aggregate each desk separately so opening balances remain correct.
@@ -484,16 +629,19 @@ export function MonthWorkspace({
 
       {/* Filtri */}
       <div className="flex flex-wrap gap-2 mt-3">
-        <select className={cx(inputCls, 'w-auto')} value={fltType} onChange={(e) => setFltType(e.target.value as any)}>
-          <option value="">Vsi tipi</option>
-          <option value="BP">Samo BP</option>
-          <option value="BI">Samo BI</option>
-        </select>
-        <select className={cx(inputCls, 'w-auto')} value={fltEmp} onChange={(e) => setFltEmp(e.target.value)}>
-          <option value="">Vsi zaposleni</option>
-          {[...employees].sort(surnameSort).map((e) => <option key={e.id} value={e.id}>{surnameFirst(e.displayName)}</option>)}
-        </select>
+        <button
+          type="button"
+          className={cx('rounded-md border px-3 py-1.5 text-[12px] font-semibold', filters.signing === 'MISSING' ? 'border-amber-400 bg-amber-100 text-amber-900' : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50')}
+          onClick={() => setFilter('signing', filters.signing === 'MISSING' ? '' : 'MISSING')}
+          aria-pressed={filters.signing === 'MISSING'}
+          title="Prikaži dokumente z manj kot dvema evidentiranima podpisoma (tudi osnutke). Stornirani so izključeni."
+        >✍ Čaka na podpis ({unsignedCount})</button>
         <input className={cx(inputCls, 'w-56')} placeholder="Išči (namen, zaposleni, znesek, št.)" value={search} onChange={(e) => setSearch(e.target.value)} />
+        <button type="button" className={cx('rounded-md border px-3 py-1.5 text-[12px] font-semibold', showFilterPicker || selectedFilters.length ? 'border-blu-300 bg-blu-50 text-blu-800' : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50')} onClick={() => setShowFilterPicker((visible) => !visible)} aria-expanded={showFilterPicker} aria-controls="optional-filter-picker">
+          {showFilterPicker ? '− Skrij izbiro filtrov' : `+ Dodaj filter${selectedFilters.length ? ` (${selectedFilters.length})` : ''}`}
+        </button>
+        <Btn onClick={resetTable} title="Počisti vse filtre, iskanje in razvrščanje">Počisti filtre</Btn>
+        <span className="self-center text-[12px] text-slate-500">Prikazano: <b>{docs.length}</b> / {deskDocs.length}</span>
         <div className="flex-1" />
         {!actionIsClosed && actionDeskId && (
           <Btn onClick={() => setShowPayoutImport(true)} title="Uvoz dodatkov akontacij iz Excel/CSV; uvoz zaposlenih ostaja v zavihku Zaposleni.">⇧ Akontacije dodatki za {monthLabel(month)}</Btn>
@@ -507,27 +655,66 @@ export function MonthWorkspace({
         )}
       </div>
 
-      {/* Tabela */}
-      <div className="mt-3 h-[520px] w-full overflow-auto overscroll-contain rounded-lg border border-slate-200 bg-white">
-        <table className="w-full text-sm min-w-[1580px]">
+      {/* The table headers remain sortable; only requested filters appear here. */}
+      {showFilterPicker && (
+        <div id="optional-filter-picker" className="mt-2 rounded-lg border border-blu-200 bg-blu-50/50 p-3">
+          <div className="mb-2 text-[12px] text-slate-600">Izberite filtre, ki jih želite uporabljati. Neizbrani filtri ne zasedajo prostora.</div>
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+            {FILTER_CHOICES.map(({ id, label }) => (
+              <label key={id} className="flex items-center gap-2 rounded-md border border-slate-200 bg-white px-2 py-1.5 text-[12px] text-slate-700 cursor-pointer hover:bg-slate-50">
+                <input type="checkbox" className="accent-blue-700" checked={selectedFilters.includes(id)} onChange={() => toggleFilter(id)} />
+                <span>{label}</span>
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
+      {selectedFilters.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-2" aria-label="Izbrani filtri">
+          {selectedFilters.map((option) => (
+            <div key={option} className="min-w-[220px] max-w-[360px] flex-1 rounded-md border border-slate-200 bg-slate-50 p-2">
+              <div className="mb-1 flex items-center justify-between gap-3">
+                <span className="text-[12px] font-semibold text-slate-700">{FILTER_CHOICES.find((choice) => choice.id === option)?.label}</span>
+                <button type="button" className="rounded px-1.5 text-slate-500 hover:bg-slate-200 hover:text-red-700" aria-label={`Odstrani filter ${option}`} title="Odstrani filter in počisti njegovo vrednost" onClick={() => removeFilter(option)}>×</button>
+              </div>
+              {option === 'number' && <input aria-label="Filtriraj po številki" className={filterCls} placeholder="Št. / osnutek" value={filters.number} onChange={(e) => setFilter('number', e.target.value)} />}
+              {option === 'date' && <div className="flex gap-2"><label className="min-w-0 flex-1 text-[11px] text-slate-500">Od<input aria-label="Datum od" type="date" className={filterCls} value={filters.dateFrom} onChange={(e) => setFilter('dateFrom', e.target.value)} /></label><label className="min-w-0 flex-1 text-[11px] text-slate-500">Do<input aria-label="Datum do" type="date" className={filterCls} value={filters.dateTo} onChange={(e) => setFilter('dateTo', e.target.value)} /></label></div>}
+              {option === 'time' && <div className="flex gap-2"><label className="min-w-0 flex-1 text-[11px] text-slate-500">Od<input aria-label="Čas od" type="time" className={filterCls} value={filters.timeFrom} onChange={(e) => setFilter('timeFrom', e.target.value)} /></label><label className="min-w-0 flex-1 text-[11px] text-slate-500">Do<input aria-label="Čas do" type="time" className={filterCls} value={filters.timeTo} onChange={(e) => setFilter('timeTo', e.target.value)} /></label></div>}
+              {option === 'type' && <select aria-label="Filtriraj po tipu" className={filterCls} value={filters.type} onChange={(e) => setFilter('type', e.target.value as TableFilters['type'])}><option value="">Vsi</option><option value="BP">BP</option><option value="BI">BI</option></select>}
+              {option === 'desk' && <select aria-label="Filtriraj po blagajni" className={filterCls} value={filters.deskId} onChange={(e) => setFilter('deskId', e.target.value)}><option value="">Vse blagajne</option>{physical.filter((desk) => viewLocationSet.has(desk.id)).map((desk) => <option key={desk.id} value={desk.id}>{desk.name}</option>)}</select>}
+              {option === 'employee' && <select aria-label="Filtriraj po zaposlenem" className={filterCls} value={filters.employeeId} onChange={(e) => setFilter('employeeId', e.target.value)}><option value="">Vsi zaposleni</option>{[...employees].sort(surnameSort).map((emp) => <option key={emp.id} value={emp.id}>{surnameFirst(emp.displayName)}</option>)}</select>}
+              {option === 'purpose' && <input aria-label="Filtriraj po namenu" className={filterCls} placeholder="Išči namen …" value={filters.purpose} onChange={(e) => setFilter('purpose', e.target.value)} />}
+              {option === 'incoming' && <div className="flex gap-2"><input aria-label="Prejemek najmanj EUR" className={filterCls} inputMode="decimal" placeholder="Od €" value={filters.incomingMin} onChange={(e) => setFilter('incomingMin', e.target.value)} /><input aria-label="Prejemek največ EUR" className={filterCls} inputMode="decimal" placeholder="Do €" value={filters.incomingMax} onChange={(e) => setFilter('incomingMax', e.target.value)} /></div>}
+              {option === 'outgoing' && <div className="flex gap-2"><input aria-label="Izdatek najmanj EUR" className={filterCls} inputMode="decimal" placeholder="Od €" value={filters.outgoingMin} onChange={(e) => setFilter('outgoingMin', e.target.value)} /><input aria-label="Izdatek največ EUR" className={filterCls} inputMode="decimal" placeholder="Do €" value={filters.outgoingMax} onChange={(e) => setFilter('outgoingMax', e.target.value)} /></div>}
+              {option === 'status' && <select aria-label="Filtriraj po stanju" className={filterCls} value={filters.status} onChange={(e) => setFilter('status', e.target.value as TableFilters['status'])}><option value="">Vsa stanja</option><option value="ODPRT">Osnutek</option><option value="ZAKLJUCEN">Zaključen</option><option value="STORNIRAN">Storniran</option><option value="LOKALNO">Nesinhroniziran</option></select>}
+              {option === 'signing' && <select aria-label="Filtriraj po podpisih" className={filterCls} value={filters.signing} onChange={(e) => setFilter('signing', e.target.value as TableFilters['signing'])}><option value="">Vsi podpisi</option><option value="MISSING">Čaka na podpis (manj kot 2)</option><option value="NONE">Brez podpisov</option><option value="PARTIAL">1 podpis</option><option value="COMPLETE">Podpisano (vsaj 2)</option></select>}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="mt-2 text-[11px] text-slate-500">Kliknite naslov stolpca za razvrščanje. Za status »podpisano« zadostujeta dva evidentirana podpisa (tudi ročno potrjeni »Prejel« pri BI).</div>
+      <div className="mt-2 h-[520px] w-full overflow-auto overscroll-contain rounded-lg border border-slate-200 bg-white">
+        <table className="w-full text-sm min-w-[1780px]">
           <thead className="sticky top-0 z-10 bg-slate-50 shadow-sm">
             <tr className="bg-slate-50 text-[11px] uppercase tracking-wide text-slate-500 text-left">
-              <th className="px-3 py-2 min-w-[110px]">Številka</th>
-              <th className="px-3 py-2 min-w-[165px]">Datum</th>
-              <th className="px-3 py-2 min-w-[135px]">Čas</th>
-              <th className="px-3 py-2 min-w-[80px]">Tip</th>
-              <th className="px-3 py-2 min-w-[150px]">Blagajna</th>
-              <th className="px-3 py-2 min-w-[250px]">Zaposleni</th>
-              <th className="px-3 py-2 min-w-[280px]">Za</th>
-              <th className="px-3 py-2 min-w-[120px] text-right text-emerald-700">+</th>
-              <th className="px-3 py-2 min-w-[120px] text-right text-red-700">−</th>
-              <th className="px-3 py-2 min-w-[170px]">Stanje</th>
-              <th className="px-3 py-2 min-w-[135px] text-right">Akcije</th>
+              {([
+                ['number', 'Številka'], ['date', 'Datum'], ['time', 'Čas'], ['type', 'Tip'],
+                ['desk', 'Blagajna'], ['employee', 'Zaposleni'], ['purpose', 'Za'],
+                ['incoming', '+'], ['outgoing', '−'], ['status', 'Stanje'], ['signing', 'Podpisi'],
+              ] as [SortColumn, string][]).map(([column, label]) => (
+                <th key={column} scope="col" className={cx('px-2 py-2 whitespace-nowrap', column === 'purpose' ? 'min-w-[230px]' : column === 'employee' ? 'min-w-[205px]' : 'min-w-[110px]')}>
+                  <button type="button" onClick={() => toggleSort(column)} title={`Razvrsti po stolpcu ${label}`} className={cx('w-full flex items-center gap-1 hover:text-blu-700', column === 'incoming' || column === 'outgoing' ? 'justify-end' : 'text-left')}>
+                    {label} <span aria-hidden="true" className={cx(sortColumn === column ? 'text-blu-700 font-bold' : 'text-slate-300')}>{sortColumn === column ? sortDirection === 'asc' ? '↑' : '↓' : '↕'}</span>
+                  </button>
+                </th>
+              ))}
+              <th scope="col" className="px-2 py-2 min-w-[135px] text-right">Akcije</th>
             </tr>
           </thead>
           <tbody>
             {docs.length === 0 && (
-              <tr><td colSpan={11} className="px-3 py-8 text-center text-slate-400">
+              <tr><td colSpan={12} className="px-3 py-8 text-center text-slate-400">
                 Ni dokumentov za izbrane filtre. {!actionIsClosed && actionDeskId && 'Dodajte vrstico z gumboma »+ Prejemek« / »+ Izdatek«.'}
               </td></tr>
             )}
@@ -622,9 +809,19 @@ export function MonthWorkspace({
                       {d.status === 'ODPRT' && problems.length === 0 && <Chip tone="green">pripravljen za zaključek</Chip>}
                       {d.status === 'ODPRT' && d.syncStatus === 'LOKALNO' && <Chip tone="violet">lokalno</Chip>}
                       {d.type === 'BI' && d.status !== 'ODPRT' && d.status !== 'STORNIRAN' && (
-                        <Chip tone={d.prejelStatus === 'NI_PODPISANO' ? 'amber' : 'green'}>{PREJEL_LABELS[d.prejelStatus]}</Chip>
+                        <Chip tone={d.prejelStatus === 'ROCNO' || d.prejelStatus === 'DIGITALNO' ? 'green' : 'amber'}>{PREJEL_LABELS[d.prejelStatus]}</Chip>
                       )}
                     </div>
+                  </td>
+                  <td className="px-2 py-1 text-[11px] whitespace-nowrap">
+                    {(() => {
+                      const progress = signingProgress(d)
+                      return (
+                        <span title={`Evidentiranih podpisov: ${progress.signed}. Za status podpisano zadostujeta 2.`} className={cx('inline-block rounded px-2 py-1 font-semibold', d.status === 'STORNIRAN' ? 'bg-slate-100 text-slate-400' : progress.complete ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-800')}>
+                          {d.status === 'STORNIRAN' ? '—' : `${Math.min(progress.signed, REQUIRED_SIGNATURES)}/${REQUIRED_SIGNATURES} ${progress.complete ? '✓' : 'čaka'}`}
+                        </span>
+                      )
+                    })()}
                   </td>
                   <td className="px-2 py-1 text-right whitespace-nowrap">
                     {d.attachments.length > 0 && <button className="mr-2 text-[12px] text-blu-700 hover:underline" title={`${d.attachments.length} priponk — klik za predogled`} onClick={() => showAttachments(d)}>📎{d.attachments.length}</button>}
@@ -773,6 +970,8 @@ export function MonthWorkspace({
 
 const cellCls =
   'w-full rounded border border-transparent hover:border-slate-300 focus:border-blu-600 focus:ring-1 focus:ring-blu-600/30 bg-transparent px-1.5 py-1 text-[13px] outline-none'
+
+const filterCls = 'w-full min-w-0 rounded border border-slate-200 bg-white px-1.5 py-1 text-[11px] font-normal text-slate-700 outline-none focus:border-blu-500 focus:ring-1 focus:ring-blu-200'
 
 function StatCard({ label, value, sub, tone, big }: { label: string; value: string; sub?: string; tone?: 'green' | 'red' | 'blue'; big?: boolean }) {
   const tones = { green: 'text-emerald-700', red: 'text-red-700', blue: 'text-blu-800' }
